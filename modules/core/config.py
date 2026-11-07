@@ -8,6 +8,7 @@ KNOWN = {
     "model": str,
     "swarm": list,
     "remote": bool,
+    "peering": bool,  # own switch for the Peer-API/peer tool (narrower than remote)
     "reasoning": bool,
     "show_thinking": bool,
     "show_tools": bool,

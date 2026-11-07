@@ -26,6 +26,7 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 | `NECRO_PEER_DIR` | – | `/tmp/necro` | Discovery directory of the Peer-API (modules/io/api.py) |
 | `NECRO_SWARM` | – | – | Swarm list `model=url;model=url` (empty = off). Always activates the swarm, even without `remote`. |
 | `NECRO_REMOTE` | `remote` | `false` | Remote mode: cfg swarm + Peer-API/peer tool. `1/true/on` = on, `0/off/false/""` = off. |
+| `NECRO_PEERING` | `peering` | `false` | Own switch for the Peer-API/peer tool only (like `NECRO_SWARM` for the swarm). Does NOT activate the cfg swarm list. |
 | `NECRO_SWARM_CHECK` | – | `30` | Interval in s for the swarm reachability check (modules/io/swarm.py `check_loop`) |
 | `NECRO_TELEGRAM` | – | – | `1` = enable Telegram (like `--telegram`) |
 | `NECRO_TELEGRAM_TOKEN` | `telegram_token` | – | Bot token (only with `--telegram` / `NECRO_TELEGRAM=1`) |
@@ -40,7 +41,8 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 | `baseurl` | str | see above | Inference server URL |
 | `model` | str | see above | Main model |
 | `swarm` | list | – | Delegable models `[{url?, model}]`; duplicate names need `name@host`; the main model is filtered out; only active with `remote=true` or `NECRO_SWARM` |
-| `remote` | bool | `false` | Remote mode |
+| `remote` | bool | `false` | Remote mode (cfg swarm + Peer-API/peer tool) |
+| `peering` | bool | `false` | Peer-API/peer tool only (no cfg swarm) |
 | `reasoning` | bool | auto | `true/false` = explicit reasoning level; omit the key = auto-detect at startup (probe) |
 | `show_thinking` | bool | `true` | Startup default for the ^T toggle (thinking blocks) |
 | `show_tools` | bool | `true` | Startup default for the ^O toggle (tool output) |

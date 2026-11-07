@@ -64,6 +64,12 @@ def _flag(env, cfg_key, default):
         return default
     return str(v).strip().lower() not in ("0", "off", "false", "")
 REMOTE = _flag("NECRO_REMOTE", "remote", False)
+# PEERING: own switch for the Peer-API/peer tool (like SWARM has NECRO_SWARM) -
+# REMOTE stays the master switch (cfg swarm + peer), PEERING is the narrow one.
+# The cfg swarm list is NOT activated by PEERING (only by REMOTE / NECRO_SWARM).
+PEERING = _flag("NECRO_PEERING", "peering", False)
+REMOTE_ORIG = REMOTE  # swarm resolution uses the original value (PEERING adds no swarm)
+REMOTE = REMOTE or PEERING
 # chat whitelist (env NECRO_TELEGRAM_CHATS or cfg 'telegram_chats', comma-separated
 # ids; empty = everyone) so strangers cannot spend tokens - SSOT for tg_submit + greeting
 TG_CHATS = [c for c in (os.environ.get("NECRO_TELEGRAM_CHATS") or CFG.get("telegram_chats") or "").replace(" ", "").split(",") if c]
@@ -98,7 +104,7 @@ TUI_HELP = (
 # pure logic in modules/io/swarm.py (parameterized, unit-testable); globals stay here.
 from modules.io.swarm import (agents_str as swarm_agents_str, check_loop as swarm_check_loop,
                            resolve as swarm_resolve)
-SWARM = swarm_resolve(CFG, os.environ.get("NECRO_SWARM"), REMOTE, BASE, MODEL)
+SWARM = swarm_resolve(CFG, os.environ.get("NECRO_SWARM"), REMOTE_ORIG, BASE, MODEL)
 # text/Markdown rendering extracted to modules/ui/render.py (pure functions, no App state)
 from modules.ui.render import (cw, sw, clean, chunks, fit, emit,
                             wrap_segs, md_lines, menu_line)

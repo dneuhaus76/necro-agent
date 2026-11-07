@@ -125,20 +125,12 @@ class KeyHandler:
         single_extra = "/" if len(cands) == 1 and os.path.isdir(os.path.join(d, cands[0])) else ""
         self._tab_apply(cands, typed_dir, name, start, cur, b, single_extra)
     def hist_nav(self, up):
-        """Arrow up/down browses the prompt history (terminal-like). A user-typed
-        line blocks navigation; a LOADED history entry can be walked further (the old
-        'if self.buf' guard stopped the walk after one step). Returns True when an entry was
-        loaded, False when the caller should scroll."""
+        """Arrow up/down walks the prompt history (terminal-like). Up starts from
+        the newest entry (even over a user-typed line - the user asked for the
+        arrows to be history-only, no content scroll); Down walks back to the
+        present. Returns True when an entry was loaded, False at a boundary."""
         if not self.history:
             return False
-        # a LOADED history entry can be walked further; but if the buffer
-        # no longer matches the loaded entry, the user has typed new text -> Up must
-        # start the walk from the newest entry (before: _hist_i stayed at len(history)
-        # after submit, so Up did nothing and a Down press was needed first)
-        if self._hist_i < len(self.history) and self.buf != self.history[self._hist_i]:
-            self._hist_i = len(self.history)
-        if self.buf and self._hist_i >= len(self.history):
-            return False  # user-typed text (no history entry loaded): keep it
         i = max(0, min(self._hist_i + (-1 if up else 1), len(self.history)))
         if i == self._hist_i:
             return False
@@ -151,11 +143,9 @@ class KeyHandler:
         # 6 footer lines); H - 5 scrolled 4 lines past the viewport per press
         page = max(shutil.get_terminal_size((80, 24)).lines - 9, 1)
         if f == "A":
-            if not self.hist_nav(True):
-                self.scroll += 3
+            self.hist_nav(True)  # arrows = history only; content scroll is PgUp/PgDn/wheel
         elif f == "B":
-            if not self.hist_nav(False):
-                self.scroll = max(0, self.scroll - 3)
+            self.hist_nav(False)
         elif f == "C":
             if self.menu and len(self.menu) > 1:  # popup open: arrows scroll the menu
                 self.menu_sel = (self.menu_sel + 1) % len(self.menu)
