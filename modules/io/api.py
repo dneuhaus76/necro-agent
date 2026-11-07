@@ -9,6 +9,12 @@ PEER_DIR = Path(os.environ.get("NECRO_PEER_DIR", "/tmp/necro"))
 PEER_DIR.mkdir(parents=True, exist_ok=True)
 PEER_TURN_TIMEOUT = 600  # fallback (s) - max wall time of a peer turn; cfg 'peer_turn_timeout' / env wins
 OWN_ID = None  # set by PeerAPI.__init__ - unique per instance, PID is not (containers share PIDs)
+def _atomic_write(path, text):
+    """tmp + os.replace in the same dir - a crash mid-write never leaves a half file
+    that peer_instances()/peer_prompt() would choke on."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
 _LOCAL_IP = None
 def local_ip():
     """Best-effort container/host IP (for cross-container peers), cached -
@@ -94,7 +100,10 @@ def peer_prompt(inst, task, timeout=None):
         # the PEER decides how long its turn may run - its discovery file carries
         # its own configured value (written at startup); +30 s so a response that
         # goes out right after the peer's ev.wait() timeout still arrives in time
-        timeout = int(inst.get("peer_turn_timeout", PEER_TURN_TIMEOUT)) + 30
+        try:
+            timeout = int(inst.get("peer_turn_timeout", PEER_TURN_TIMEOUT)) + 30
+        except (ValueError, TypeError):
+            timeout = PEER_TURN_TIMEOUT + 30  # malformed value in the discovery file
     req = urllib.request.Request(f"http://{host}:{inst['port']}/api/prompt",
                                  json.dumps({"task": task, "from": OWN_ID}).encode(),
                                  {"Content-Type": "application/json", "X-Necro-Token": inst["token"]})
@@ -132,11 +141,11 @@ class PeerAPI:
         app._peer_queue = queue.Queue()
         threading.Thread(target=self._peer_worker, daemon=True).start()
         self.path = PEER_DIR / f"necro-{self.id}.json"
-        self.path.write_text(json.dumps({"id": self.id, "host": self.host,
-                                         "ip": local_ip() if self.host in ("0.0.0.0", "::") else "127.0.0.1",
-                                         "port": self.port, "token": self.token,
-                                         "peer_turn_timeout": self.turn_timeout,
-                                         "pid": os.getpid(), "cwd": os.getcwd()}))
+        _atomic_write(self.path, json.dumps({"id": self.id, "host": self.host,
+                                             "ip": local_ip() if self.host in ("0.0.0.0", "::") else "127.0.0.1",
+                                             "port": self.port, "token": self.token,
+                                             "peer_turn_timeout": self.turn_timeout,
+                                             "pid": os.getpid(), "cwd": os.getcwd()}))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
     def _peer_worker(self):
         """Drain the incoming peer-turn queue - one turn at a time, in order."""

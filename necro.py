@@ -3,7 +3,7 @@
 import codecs, hashlib, json, os, select, shutil, signal, socket, subprocess
 import bisect, sys, termios, threading, time, tty
 from pathlib import Path
-VERSION = "0.1.009"  # format: MAJOR.MINOR.PATCH (PATCH 3-stellig, 0-gepaddet)
+VERSION = "0.1.010"  # format: MAJOR.MINOR.PATCH (PATCH 3-stellig, 0-gepaddet)
 def load_cfg():
     """necro.cfg (JSON) from cwd, then from the script dir; env vars take precedence."""
     for d in (Path.cwd(), Path(__file__).resolve().parent):
