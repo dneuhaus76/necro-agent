@@ -1,14 +1,11 @@
 # NECROMANCER (NECRO)
 
-*A minimal terminal agent harness — Python 3 stdlib only.*
+| Description | Emblem |
+| :--- | :---: |
+| *A minimal terminal agent harness — Python 3 stdlib only.* | <img width="200" alt="image" src="https://github.com/user-attachments/assets/22687e32-1f17-4c5c-be06-5b11b9d9d5ef" /> |
 
 **NECRO** is a small, self-contained agent harness for the terminal. It is inspired by
 [pi-agent](https://github.com/earendil-works/pi) — an amazing product.
-
-
-| Emblem | Necro in action |
-|--------|-----------------|
-| <img alt="image" src="https://github.com/user-attachments/assets/22687e32-1f17-4c5c-be06-5b11b9d9d5ef" /> | <img alt="image" src="https://github.com/user-attachments/assets/96fa52c3-c303-412a-b818-f014cec38524" /> |
 
 ## Features
 
@@ -21,6 +18,8 @@
 - **SQLite session DB** with `recall` — keyword search over past sessions (last 7 days)
 
 ## The cool part: Swarm & Peers
+
+<img alt="image" src="https://github.com/user-attachments/assets/96fa52c3-c303-412a-b818-f014cec38524" />
 
 ### Swarm (delegate / consult)
 
