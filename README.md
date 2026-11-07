@@ -70,6 +70,17 @@ same tools, so it understands the environment without any translation layer.
 ## Quickstart (local client)
 
 Debian 13, project in `~/app`:
+```
+cd ~/app
+.
+├── data
+└── modules
+    ├── core
+    ├── io
+    └── ui
+necro.py
+necro.cfg
+```
 
 ```bash
 # Session 1
