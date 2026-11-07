@@ -10,14 +10,14 @@ safety breaks and the trace lives in `necro.py`.
 
 ```
 App.turn()  (necro.py)          Agent (modules/core/agent.py)
-      │                                │
+      │                                 │
       │  for step in range(MAX_STEPS)   │
       ├── agent.compact() ─────────────►│   context < 80 % of the window
       ├── agent.stream(tools) ─────────►│   SSE stream -> text + tool calls
-      │      │                         │
-      │      ▼                         │
+      │      │                          │
+      │      ▼                          │
       ├── agent.run_calls(calls) ──────►│  parallel tool execution
-      │      │                         │
+      │      │                          │
       │      └─ no calls? ─────────────► turn ends (agent reply)
 ```
 
@@ -101,12 +101,3 @@ Every turn writes one row into the `traces` table
 improvement: steps, tools, errors, chars, ms, per-tool breakdown,
 delegations, parallelism, `prompt`/`completion` tokens, latency.
 
-## History of Key Changes
-
-| Session | Change |
-|---|---|
-| N167 | Agent loop extracted from `necro.py` into `modules/core/agent.py` (pure logic) |
-| N85 | Per-step socket timeout (`step_timeout`) – a hung stream does not block forever |
-| F6 | Deterministic `call_{n}` fallback for tool calls (stable across retries) |
-| N147 | Telegram progress milestones every 5 steps |
-| N151 | Run summary to whitelisted chats on shutdown |

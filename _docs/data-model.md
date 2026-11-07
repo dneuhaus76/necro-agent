@@ -88,12 +88,3 @@ Per turn, `App.turn()` (necro.py) writes one row into `traces` with:
 
 This data serves A/B comparisons and the self-improvement loop. `ts` is
 indexed for time series.
-
-## History of Key Changes
-
-| Session | Change |
-|---|---|
-| N148 | DB path movable per instance (`NECRO_DB`) |
-| F4 | Explicit transactions in `sync()` (no empty state after crash) |
-| N167 | Trace replaces the old `data/necro.jsonl` file (structured metrics) |
-| – | WAL + `busy_timeout`: second instance no longer gets "database is locked" |
