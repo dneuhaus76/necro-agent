@@ -16,6 +16,7 @@ KNOWN = {
     "ctx_window": int,  # fallback context window (real size from the inference server)
     "peer_host": str,
     "peer_port": int,   # int or numeric string
+    "peer_turn_timeout": int,  # max wall time of a peer turn in seconds
     "step_timeout": int,  # per-step socket timeout in seconds
     "turn_timeout": int,  # wall-clock timeout per turn in seconds
     "max_turns": int,     # max turns per session, self-loop guard

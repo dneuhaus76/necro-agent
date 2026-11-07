@@ -22,6 +22,7 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 | `NECRO_STEP_TIMEOUT` | `step_timeout` | `300` | Socket timeout per inference step in s – a hung stream does not block the turn forever |
 | `NECRO_PEER_HOST` | `peer_host` | `127.0.0.1` | Peer-API bind address (Docker: `0.0.0.0`) |
 | `NECRO_PEER_PORT` | `peer_port` | `0` (ephemeral) | Peer-API port (Docker: fixed, exposed port) |
+| `NECRO_PEER_TURN_TIMEOUT` | `peer_turn_timeout` | `600` | Max wall time of a peer turn in s (watchdog + HTTP waits; the peer's own value is used by callers) |
 | `NECRO_PEER_DIR` | – | `/tmp/necro` | Discovery directory of the Peer-API (modules/io/api.py) |
 | `NECRO_SWARM` | – | – | Swarm list `model=url;model=url` (empty = off). Always activates the swarm, even without `remote`. |
 | `NECRO_REMOTE` | `remote` | `false` | Remote mode: cfg swarm + Peer-API/peer tool. `1/true/on` = on, `0/off/false/""` = off. |

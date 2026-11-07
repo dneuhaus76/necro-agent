@@ -116,6 +116,7 @@ directory. Example:
   "max_turns": 200,
   "remote": true,
   "peer_host": "0.0.0.0",
+  "peer_turn_timeout": 3600,
   "telegram_chats": "[chat-id]",
   "turn_timeout": 14400,
   "_doc_colors": {

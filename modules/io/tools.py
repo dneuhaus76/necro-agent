@@ -106,11 +106,30 @@ def read_file(path, offset=1, limit=0):
     else:
         shown = len(sel)
     return f"[lines {off}-{off + shown - 1} of {len(lines)}]\n" + body
+_WRITE_LOCKS = {}  # resolved path -> Lock; serializes read-modify-write per file
+_WRITE_LOCKS_GUARD = threading.Lock()
+def _write_lock(path):
+    """Per-file lock: tools run in parallel (ThreadPoolExecutor), and two
+    concurrent edits of the SAME file would otherwise race - both read the old
+    content, both write, and one edit is silently lost (or the shared .tmp is
+    moved by the first os.replace, so the second fails with FileNotFoundError)."""
+    key = str(Path(path).expanduser().resolve())
+    with _WRITE_LOCKS_GUARD:
+        return _WRITE_LOCKS.setdefault(key, threading.Lock())
 def _atomic_write(p, text):
-    """Write via a temp file + rename: a crash mid-write cannot corrupt the target."""
-    tmp = p.parent / (p.name + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, p)
+    """Write via a temp file + rename: a crash mid-write cannot corrupt the target.
+    The tmp name is unique per thread (pid + thread id) - a leftover .tmp of a
+    dead thread must not be mistaken for this write's temp file."""
+    tmp = p.parent / f"{p.name}.{os.getpid()}-{threading.get_ident()}.tmp"
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, p)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 def write_file(path, content):
     p = Path(path).expanduser()
     cur = p.parent  # a file component in the path (e.g. 'modules/necro.py/x') would become a dir via mkdir
@@ -119,7 +138,8 @@ def write_file(path, content):
             return f"error: {cur} is a file (not a directory)"
         cur = cur.parent
     p.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(p, content)
+    with _write_lock(p):
+        _atomic_write(p, content)
     return f"wrote {len(content)} chars to {p}"
 def edit_file(path, old, new):
     if not old:
@@ -127,8 +147,9 @@ def edit_file(path, old, new):
     p = Path(path).expanduser()
     if p.is_dir():
         return f"error: {p} is a directory"
-    s = p.read_text(errors="replace")
-    if (k := s.count(old)) != 1:
-        return f"error: old text found {k}x (exactly 1 required)"
-    _atomic_write(p, s.replace(old, new))
+    with _write_lock(p):  # read + count + write as one critical section (see _write_lock)
+        s = p.read_text(errors="replace")
+        if (k := s.count(old)) != 1:
+            return f"error: old text found {k}x (exactly 1 required)"
+        _atomic_write(p, s.replace(old, new))
     return diff_view(s, old, new)

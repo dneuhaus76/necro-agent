@@ -3,7 +3,7 @@
 import codecs, hashlib, json, os, select, shutil, signal, socket, subprocess
 import bisect, sys, termios, threading, time, tty
 from pathlib import Path
-VERSION = "0.1.008"  # format: MAJOR.MINOR.PATCH (PATCH 3-stellig, 0-gepaddet)
+VERSION = "0.1.009"  # format: MAJOR.MINOR.PATCH (PATCH 3-stellig, 0-gepaddet)
 def load_cfg():
     """necro.cfg (JSON) from cwd, then from the script dir; env vars take precedence."""
     for d in (Path.cwd(), Path(__file__).resolve().parent):
@@ -48,6 +48,9 @@ CTX = _int("NECRO_CTX_WINDOW", "ctx_window", 8192)  # fallback; real size from i
 # Peer-API: bind address + port, configurable (Docker: host 0.0.0.0 + fixed port)
 PEER_HOST = os.environ.get("NECRO_PEER_HOST", CFG.get("peer_host", "127.0.0.1"))
 PEER_PORT = _int("NECRO_PEER_PORT", "peer_port", 0)  # 0 = ephemeral
+# max wall time of a peer turn (watchdog + HTTP waits) - a busy peer with long
+# tool calls must not be aborted at the hard-coded 600 s
+PEER_TURN_TIMEOUT = _int("NECRO_PEER_TURN_TIMEOUT", "peer_turn_timeout", 600)
 # per-step socket timeout - a hung stream (server alive, no data) used to block
 # the turn up to the hard-coded 900 s; now configurable (cfg 'step_timeout' / env)
 STEP_TIMEOUT = _int("NECRO_STEP_TIMEOUT", "step_timeout", 300)
@@ -893,7 +896,7 @@ def main():
     start_background(app)  # daemon threads (model probe, swarm availability)
     if REMOTE:  # peer-API + sibling discovery only in remote mode
         from modules.io.api import PeerAPI  # peer discovery + HTTP API
-        app.peer = PeerAPI(app, host=PEER_HOST, port=PEER_PORT)
+        app.peer = PeerAPI(app, host=PEER_HOST, port=PEER_PORT, turn_timeout=PEER_TURN_TIMEOUT)
         peer_refresh()
     if tg_enabled:
         token = os.environ.get("NECRO_TELEGRAM_TOKEN") or CFG.get("telegram_token")

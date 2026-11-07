@@ -7,7 +7,7 @@ from pathlib import Path
 # own subdir so the host only needs to mount /tmp/necro (not all of /tmp)
 PEER_DIR = Path(os.environ.get("NECRO_PEER_DIR", "/tmp/necro"))
 PEER_DIR.mkdir(parents=True, exist_ok=True)
-PEER_TURN_TIMEOUT = 600  # max wall time of a peer turn - watchdog aborts it
+PEER_TURN_TIMEOUT = 600  # fallback (s) - max wall time of a peer turn; cfg 'peer_turn_timeout' / env wins
 OWN_ID = None  # set by PeerAPI.__init__ - unique per instance, PID is not (containers share PIDs)
 _LOCAL_IP = None
 def local_ip():
@@ -83,11 +83,18 @@ def peer_health(inst, timeout=2):
             return bool(json.loads(r.read()).get("busy")), None
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
-def peer_prompt(inst, task, timeout=PEER_TURN_TIMEOUT):
+def peer_prompt(inst, task, timeout=None):
     """one-shot peer prompt call (HTTP POST /api/prompt). Returns the result
-    string or an error string - the caller (run_tool) just forwards it."""
+    string or an error string - the caller (run_tool) just forwards it.
+    timeout: wall time of the peer turn + queue wait (default: the peer's own
+    configured peer_turn_timeout, read from its discovery file)."""
     import urllib.request
     host = inst.get("ip") or "127.0.0.1"  # cross-container peers use their real IP
+    if timeout is None:
+        # the PEER decides how long its turn may run - its discovery file carries
+        # its own configured value (written at startup); +30 s so a response that
+        # goes out right after the peer's ev.wait() timeout still arrives in time
+        timeout = int(inst.get("peer_turn_timeout", PEER_TURN_TIMEOUT)) + 30
     req = urllib.request.Request(f"http://{host}:{inst['port']}/api/prompt",
                                  json.dumps({"task": task, "from": OWN_ID}).encode(),
                                  {"Content-Type": "application/json", "X-Necro-Token": inst["token"]})
@@ -98,10 +105,12 @@ def peer_prompt(inst, task, timeout=PEER_TURN_TIMEOUT):
         return f"error: {type(e).__name__}: {e}"
     return f"[peer {inst['id']}] {o['result']} ({o['tool_calls']} tool calls)"
 class PeerAPI:
-    def __init__(self, app, host="127.0.0.1", port=0):
-        """host/port configurable: Docker needs 0.0.0.0 + a fixed, exposed port."""
+    def __init__(self, app, host="127.0.0.1", port=0, turn_timeout=PEER_TURN_TIMEOUT):
+        """host/port configurable: Docker needs 0.0.0.0 + a fixed, exposed port.
+        turn_timeout (s): max wall time of a peer turn (watchdog + HTTP waits)."""
         global OWN_ID
         self.app = app
+        self.turn_timeout = turn_timeout
         self.id = os.urandom(4).hex()
         OWN_ID = self.id  # self-identity for sibling filtering (PID is not unique across containers)
         self.token = os.urandom(12).hex()
@@ -126,6 +135,7 @@ class PeerAPI:
         self.path.write_text(json.dumps({"id": self.id, "host": self.host,
                                          "ip": local_ip() if self.host in ("0.0.0.0", "::") else "127.0.0.1",
                                          "port": self.port, "token": self.token,
+                                         "peer_turn_timeout": self.turn_timeout,
                                          "pid": os.getpid(), "cwd": os.getcwd()}))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
     def _peer_worker(self):
@@ -149,7 +159,7 @@ class PeerAPI:
             self.app.busy = True  # visible to health + queues local turns; turn()'s finally releases it
             # a hung turn must not hold busy forever - the watchdog aborts it
             # (stop is checked in the stream loop and between steps), which releases busy
-            watchdog = threading.Timer(PEER_TURN_TIMEOUT, self.app.stop.set)
+            watchdog = threading.Timer(self.turn_timeout, self.app.stop.set)
             watchdog.start()
             try:
                 self.app.turn(done=ev)
@@ -163,8 +173,8 @@ class PeerAPI:
             pass
 def _make_handler(api):
     class H(BaseHTTPRequestHandler):
-        timeout = PEER_TURN_TIMEOUT + 30  # a full agent turn can take minutes; +30 s so the
-                                          # response still goes out after ev.wait() times out
+        timeout = api.turn_timeout + 30  # a full agent turn can take minutes; +30 s so the
+                                         # response still goes out after ev.wait() times out
         def log_message(self, *a):
             pass
         def _ok(self, code, obj):
@@ -210,7 +220,7 @@ def _make_handler(api):
             # must already be in the context when ITS turn runs (not the next one's).
             ev = threading.Event()
             app._peer_queue.put((msg, frm, ev))
-            ev.wait(timeout=PEER_TURN_TIMEOUT)
+            ev.wait(timeout=api.turn_timeout)
             # only messages of THIS turn - a turn that ended without a new assistant
             # reply (error/abort/timeout) must return '(no output)', not a stale reply
             # from an earlier conversation. matched by IDENTITY, not by index -

@@ -35,7 +35,7 @@ When the agent invokes the `peer` tool (e.g. `peer:fd17831a` with a task):
 2. Token verification.
 3. Appends the task as a `user` message into the peer's chat context (under the lock).
 4. **Enqueues** the turn into the peer's `_peer_queue` – a worker thread drains it one turn at a time, in order, and waits for a running local turn to finish first (so two turns never race on `app.messages`). A second POST no longer gets `409`.
-5. **Waits up to 600 seconds** (`PEER_TURN_TIMEOUT` watchdog) for the result.
+5. **Waits up to `peer_turn_timeout` seconds** (default 600, cfg/env configurable; watchdog) for the result.
 6. Returns `{result: text, tool_calls: count}`.
 
 ### Recursion Guard
@@ -62,4 +62,4 @@ The peer API is only activated when `remote=true` (cfg) or `NECRO_REMOTE` (env).
 - **Bind failure** (e.g. `EADDRNOTAVAIL`): Falls back to `0.0.0.0` + ephemeral port. The instance continues running; a warning is logged.
 - **Port in use**: Keeps the configured host, switches to an ephemeral port.
 - **Busy peer**: The task is queued and runs after the current turn (no `409`).
-- **Turn timeout**: The waiting thread is capped at 600 s. If the turn does not complete, the result is whatever was produced so far (or `(no output)` if no assistant reply was generated).
+- **Turn timeout**: The waiting thread is capped at `peer_turn_timeout` (default 600 s, configurable). If the turn does not complete, the result is whatever was produced so far (or `(no output)` if no assistant reply was generated).
