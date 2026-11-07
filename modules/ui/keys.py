@@ -1,0 +1,232 @@
+"""Key handling: key dispatch, TAB completion, history navigation,
+CSI sequences, mouse mode, raw input feed.
+
+Mixin for the App class (necro.py) - pure logic, no TUI draw calls, so it
+stays in the ui layer with no dependencies beyond the stdlib (layer rule:
+ui imports only core.palette).
+"""
+import os, re, shutil, time
+
+# ?1000 = base mouse mode (wheel + clicks), ?1006 = SGR encoding. Both are
+# required: tmux 3.5a only forwards the wheel to the app when a base mode is set
+# (mouse_any_flag checks 1000/1002/1003, not 1006) - otherwise the wheel falls
+# into tmux copy-mode (scrollback = "command history") instead of the window content
+MOUSE_ON = b"\x1b[?1000h\x1b[?1006h"
+MOUSE_OFF = b"\x1b[?1000l\x1b[?1006l"
+
+
+class KeyHandler:
+    """Key handling for the App (mixin): expects the App state (buf, cur, rx,
+    menu, history, ...) and the App methods ins/submit/abort to exist."""
+    def key(self, c):
+        b, cur = self.buf, self.cur
+        if c in "\r\n":
+            self.submit()
+        elif c in "\x7f\x08":
+            if cur:
+                self.buf, self.cur = b[:cur - 1] + b[cur:], cur - 1
+                self.tab_hint, self.menu = "", None
+        elif c == "\x03":
+            self.buf, self.cur, self.tab_hint, self.menu = "", 0, "", None  # also clear the input line
+            self.abort() if self.busy else self.clear_session()  # idle: clear screen (like /clear)
+        elif c == "\x1b":  # bare Escape (no CSI bytes followed) also aborts
+            if self.busy:
+                self.abort()
+            elif self.menu:
+                self.menu, self._tab_cycle = None, None  # close popup + reset cycle
+        elif c == "\x04":
+            self.quit = self.quit or not b
+        elif c == "\x14":
+            self.think = not self.think
+        elif c == "\x0f":
+            self.show_tools = not self.show_tools
+        elif c == "\x18":
+            self.show_edits = not self.show_edits
+        elif c == "\x01":
+            self.cur = 0
+        elif c == "\x05":
+            self.cur = len(b)
+        elif c == "\x0b":
+            self.buf = b[:cur]
+        elif c == "\x15":
+            self.buf, self.cur = b[cur:], 0
+        elif c == "\x17":
+            j = cur
+            while j and b[j - 1] == " ":
+                j -= 1
+            while j and b[j - 1] != " ":
+                j -= 1
+            self.buf, self.cur = b[:j] + b[cur:], j
+        elif c == "\x09":
+            self.tab_complete()
+        elif c >= " ":
+            self.ins(c)
+    def _tab_apply(self, cands, typed_dir, name, start, cur, b, single_extra=""):
+        """Shared TAB cycle logic (commands and files): no-match popup, single-candidate
+        insert (+ single_extra), longest common prefix, then cycling."""
+        if not cands:  # no match: popup only (no text change)
+            self._tab_cands, self._tab_cycle, self.menu, self.menu_sel = None, None, ["(no matches)"], 0
+            return
+        cyc = self._tab_cycle  # the inserted candidate becomes the only match; keep cycling
+        if cyc and cands[0] not in cyc:
+            cyc = None
+        if self._tab_cands != cands:  # a fresh round resets the counter (-1: first TAB -> cand 0)
+            self._tab_i = -1
+        self._tab_cands = cands
+        if len(cands) == 1 and cyc and len(cyc) > 1:  # mid-cycle: continue through the list
+            i = (cyc.index(cands[0]) + 1) % len(cyc)
+            full = typed_dir + cyc[i]  # no trailing '/': cycling stays on this directory level
+            self.buf, self.cur = b[:start] + full + b[cur:], start + len(full)
+            self._tab_cycle = cyc
+            self.menu, self.menu_sel = cyc, i
+            return
+        self._tab_cycle = None
+        if len(cands) == 1:  # single candidate: insert (+ single_extra: ' ' for commands, '/' for dirs)
+            full = typed_dir + cands[0] + single_extra
+            self.buf, self.cur = b[:start] + full + b[cur:], start + len(full)
+            self.menu = None
+            return
+        prefix = os.path.commonprefix(cands)
+        if len(prefix) > len(name):  # first TAB: longest common prefix
+            full = typed_dir + prefix
+            self.buf, self.cur = b[:start] + full + b[cur:], start + len(full)
+            self.menu, self.menu_sel = cands, 0
+        else:  # subsequent TABs: cycle through the candidates (no trailing '/': stay on this level)
+            self._tab_i += 1  # was never incremented (always cand 0)
+            full = typed_dir + cands[self._tab_i % len(cands)]
+            self.buf, self.cur = b[:start] + full + b[cur:], start + len(full)
+            self._tab_cycle = cands  # remember the list for the mid-cycle TABs
+            self.menu, self.menu_sel = cands, self._tab_i % len(cands)  # popup follows the cycle
+    def tab_complete(self):
+        """bash-like TAB completion: '/' commands (single slash) and file names
+        (relative to cwd); a unique directory gets a trailing '/'."""
+        b, cur = self.buf, self.cur
+        start = cur
+        while start > 0 and b[start - 1] not in " \t":
+            start -= 1
+        word = b[start:cur]
+        if not word:
+            return
+        if word.startswith("/") and word.count("/") == 1:  # internal command
+            cmds = ("/help", "/quit", "/clear", "/new", "/model", "/cd", "/review", "/test", "/plan")
+            self._tab_apply([c for c in cmds if c.startswith(word)], "", word, start, cur, b, single_extra=" ")
+            return
+        d, name = os.path.split(word)
+        d = d or "."
+        try:
+            entries = [e for e in os.listdir(d) if not e.startswith(".")]
+        except OSError:
+            return  # unreadable dir: leave the word alone
+        cands = [e for e in entries if e.startswith(name)]
+        # the directory prefix exactly as typed ('./', 'sub/', or '') - os.path.split
+        # normalizes './x' to d='.', so the typed prefix must be kept separately or TAB
+        # would drop it (the user could only ever pick the first candidate of a browse).
+        typed_dir = word[:word.rfind("/") + 1] if "/" in word else ""
+        single_extra = "/" if len(cands) == 1 and os.path.isdir(os.path.join(d, cands[0])) else ""
+        self._tab_apply(cands, typed_dir, name, start, cur, b, single_extra)
+    def hist_nav(self, up):
+        """Arrow up/down browses the prompt history (terminal-like). A user-typed
+        line blocks navigation; a LOADED history entry can be walked further (the old
+        'if self.buf' guard stopped the walk after one step). Returns True when an entry was
+        loaded, False when the caller should scroll."""
+        if not self.history:
+            return False
+        # a LOADED history entry can be walked further; but if the buffer
+        # no longer matches the loaded entry, the user has typed new text -> Up must
+        # start the walk from the newest entry (before: _hist_i stayed at len(history)
+        # after submit, so Up did nothing and a Down press was needed first)
+        if self._hist_i < len(self.history) and self.buf != self.history[self._hist_i]:
+            self._hist_i = len(self.history)
+        if self.buf and self._hist_i >= len(self.history):
+            return False  # user-typed text (no history entry loaded): keep it
+        i = max(0, min(self._hist_i + (-1 if up else 1), len(self.history)))
+        if i == self._hist_i:
+            return False
+        self._hist_i = i
+        self.buf = self.history[i] if i < len(self.history) else ""  # i=len = present, i=len-1 = newest
+        self.cur = len(self.buf)
+        return True
+    def csi(self, p, f):
+        # one page = the visible content area (H - 9: 2 header + 1 separator +
+        # 6 footer lines); H - 5 scrolled 4 lines past the viewport per press
+        page = max(shutil.get_terminal_size((80, 24)).lines - 9, 1)
+        if f == "A":
+            if not self.hist_nav(True):
+                self.scroll += 3
+        elif f == "B":
+            if not self.hist_nav(False):
+                self.scroll = max(0, self.scroll - 3)
+        elif f == "C":
+            if self.menu and len(self.menu) > 1:  # popup open: arrows scroll the menu
+                self.menu_sel = (self.menu_sel + 1) % len(self.menu)
+            else:
+                self.cur = min(len(self.buf), self.cur + 1)
+        elif f == "D":
+            if self.menu and len(self.menu) > 1:
+                self.menu_sel = (self.menu_sel - 1) % len(self.menu)
+            else:
+                self.cur = max(0, self.cur - 1)
+        elif f == "H" or (f == "~" and p in ("1", "7")):
+            self.cur = 0
+        elif f == "F" or (f == "~" and p in ("4", "8")):
+            self.cur = len(self.buf)
+        elif f == "~" and p == "5":
+            self.scroll += page
+        elif f == "~" and p == "6":
+            self.scroll = max(0, self.scroll - page)
+        elif f == "~" and p == "3":
+            self.buf = self.buf[:self.cur] + self.buf[self.cur + 1:]
+        elif f == "~" and p == "24":  # F12: toggle mouse mode
+            self.toggle_mouse()
+    def toggle_mouse(self):
+        # with ?1000 on, the app swallows every mouse event (drag-select included),
+        # so the terminal's native selection + copy is dead. F12 drops the base mode:
+        # the terminal selects/copies natively (works inside tmux); F12 restores the
+        # in-app wheel scroll.
+        self.mouse = not self.mouse
+        try:
+            os.write(1, MOUSE_ON if self.mouse else MOUSE_OFF)
+        except OSError:
+            pass  # dead terminal (EPIPE): the main loop notices on the next read
+        self.tab_hint = ("mouse: on (wheel scroll)" if self.mouse
+                         else "mouse: off (select + copy, F12 to revert)")
+        self.dirty = True
+    def feed(self, s):
+        self.rx += s
+        self.rx_time = time.time()
+        while self.rx:
+            r, c = self.rx, self.rx[0]
+            if c != "\x1b":
+                self.rx = r[1:]
+                self.key(c)
+                continue
+            if r.startswith("\x1b[200~"):  # bracketed paste
+                e = r.find("\x1b[201~")
+                if e < 0:
+                    return
+                self.ins(r[6:e].replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    "))
+                self.rx = r[e + 6:]
+            elif r.startswith("\x1b[<"):  # SGR mouse: the wheel scrolls the
+                m = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])", r)  # in-app history (same as
+                if not m:  # Up/Down); the alt screen has no terminal scrollback to
+                    return  # forward SU/Sd to the terminal (that only shifted the display)
+                btn, _, _, rel = m.groups()
+                self.rx = r[m.end():]
+                if rel == "M" and btn in ("64", "65"):  # wheel release: 3 lines per notch
+                    self.scroll += 3 if btn == "64" else -3
+                    self.scroll = max(0, self.scroll)  # clamped upper bound in draw()
+                    self.dirty = True
+            elif len(r) == 1:
+                return
+            elif r[1] in "[O":
+                m = re.match(r"\x1b[\[O]([0-9;?]*)([A-Za-z~])", r)
+                if not m:
+                    if len(r) < 12:
+                        return  # incomplete sequence
+                    self.rx = r[1:]
+                    continue
+                self.csi(m[1], m[2])
+                self.rx = r[m.end():]
+            else:
+                if r[1] in "\r\n":  # Alt+Enter = newline
+                    self.ins("\n")

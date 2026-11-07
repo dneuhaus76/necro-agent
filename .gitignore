@@ -1,0 +1,12 @@
+# whitelist: only these go to git
+/*
+!necro.py
+!README.md
+!LICENSE
+!_docs/
+!modules/
+!emblem
+!.gitignore
+
+**/__pycache__/
+*.pyc
