@@ -1,8 +1,6 @@
 # NECROMANCER (NECRO)
 
-| Description | Emblem |
-| :--- | :---: |
-| *A minimal terminal agent harness — Python 3 stdlib only.* | <img width="200" alt="image" src="https://github.com/user-attachments/assets/22687e32-1f17-4c5c-be06-5b11b9d9d5ef" /> |
+*A minimal terminal agent harness — Python 3 stdlib only.* 
 
 **NECRO** is a small, self-contained agent harness for the terminal. It is inspired by
 [pi-agent](https://github.com/earendil-works/pi) — an amazing product.
@@ -51,7 +49,7 @@ The advantage: **identical prerequisites** — the peer runs the same harness wi
 same tools, so it understands the environment without any translation layer.
 
 > **Tip (Docker):** run peers in containers and share the discovery directory with a
-> bind mount, so each container sees the other instances:
+> bind mount, so each container sees/finds easy the other instances:
 >
 > ```yaml
 >     volumes:
@@ -162,8 +160,10 @@ Deeper dives live in `_docs/`:
 | [`tui-rendering.md`](_docs/tui-rendering.md) | Terminal UI: rendering, colors, keys, mouse |
 | [`security.md`](_docs/security.md) | Guardrails for unattended operation |
 
+
 ## License
 
-[GPL-3.0](LICENSE) (copyleft) — derivatives must stay open source.
+| License| NECROMANCER<br>(NECRO) |
+| :--- | :---: |
+| [GPL-3.0](LICENSE) (copyleft) — derivatives must stay open source.<br><br>Copyright (C) 2026 Daniel Neuhaus | <img width="200" alt="image" src="https://github.com/user-attachments/assets/22687e32-1f17-4c5c-be06-5b11b9d9d5ef" /> |
 
-Copyright (C) 2026 Daniel Neuhaus
