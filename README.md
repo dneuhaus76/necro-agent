@@ -17,7 +17,7 @@
 
 ## The cool part: Swarm & Peers
 
-<img alt="image" src="https://github.com/user-attachments/assets/96fa52c3-c303-412a-b818-f014cec38524" />
+<img alt="image" src="https://github.com/user-attachments/assets/d1dc83af-7d23-481e-aaac-63b0b96cc424" />
 
 ### Swarm (delegate / consult)
 
