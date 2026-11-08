@@ -3,7 +3,7 @@
 import codecs, hashlib, json, os, select, shutil, signal, socket, subprocess
 import bisect, sys, termios, threading, time, tty
 from pathlib import Path
-VERSION = "0.1.010"  # format: MAJOR.MINOR.PATCH (PATCH 3-stellig, 0-gepaddet)
+VERSION = "0.1.011"  # format: MAJOR.MINOR.PATCH (PATCH 3-stellig, 0-gepaddet)
 def load_cfg():
     """necro.cfg (JSON) from cwd, then from the script dir; env vars take precedence."""
     for d in (Path.cwd(), Path(__file__).resolve().parent):
@@ -398,8 +398,10 @@ class App(KeyHandler):
             # recall: compact italic head "recall…" (verbose results stay out of the way);
             # the body follows the ^o tools toggle like every other tool
             head_segs = [("recall…", "i")] if is_recall else [(head, "b")]
+            # swarm/peer tools are highlighted in necro green (EMBLEM) instead of dark
+            head_color = EMBLEM if (head.split() or ["?"])[0] in ("consult", "peer", "delegate") else DARK
             for j, l in enumerate(wrap_segs(head_segs, w - 2)):
-                L.append(emit(l, DARK, (sym + " ") if j == 0 else " " * sw(sym)))
+                L.append(emit(l, head_color, (sym + " ") if j == 0 else " " * sw(sym)))
             if (self.show_edits if is_edit else self.show_tools) and body:
                 for ln in body:
                     st = ("o" if ln.startswith("-") else "g" if ln.startswith("+") else "") if is_edit else ""

@@ -4,6 +4,7 @@ in) - App.run_tool stays a thin dispatcher. Unit-testable without a server."""
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -123,6 +124,8 @@ def _atomic_write(p, text):
     tmp = p.parent / f"{p.name}.{os.getpid()}-{threading.get_ident()}.tmp"
     try:
         tmp.write_text(text)
+        if p.exists():  # preserve existing mode (e.g. u+x) - a fresh tmp file would reset it to umask 644
+            os.chmod(tmp, stat.S_IMODE(p.stat().st_mode))
         os.replace(tmp, p)
     except OSError:
         try:

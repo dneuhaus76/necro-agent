@@ -349,6 +349,8 @@ class Agent:
         if not ps:
             return "error: no sibling NECRO instance found"
         p = next((x for x in ps if x["id"] == a.get("instance")), None) or ps[0]
+        if blk is not None:  # live progress: show the contacted peer id (primary terminal)
+            self.app.set_head(blk, f"peer  [{p['id']}] contacting...")
         _, err = peer_health(p)  # reachability check before sending a big task
         if err:
             return f"error: peer {p['id']} not reachable ({err})"

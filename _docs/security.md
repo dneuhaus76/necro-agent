@@ -48,6 +48,36 @@ The allow-list is also the recipient list for the start-up greeting.
 All whitelisted chats get the same full agent access. Fine for a personal
 bot; for multi-user setups a per-chat role model would be the next step.
 
+## 3. Atomic File Writes (Crash Safety)
+
+**Threat.** `write_file` / `edit_file` run as tools in parallel threads. An
+in-place write (`open(p, 'w')`) truncates the target immediately — a crash,
+`^C` or OOM mid-write leaves a half-written (corrupt) file. Two concurrent
+edits of the same file would also race: both read the old content, both
+write, one edit is silently lost.
+
+**Mechanism.** `_atomic_write()` in `modules/io/tools.py`:
+
+1. Write the full new content to a unique temp file in the same directory
+   (`<name>.<pid>-<tid>.tmp` — unique per thread, so a leftover tmp of a dead
+   thread is not mistaken for this write's temp file).
+2. If the target already exists, copy its mode onto the tmp file
+   (`os.chmod(tmp, stat.S_IMODE(...))`) — otherwise the rename would reset
+   permissions to the umask default (e.g. lose `u+x`).
+3. `os.replace(tmp, target)` — atomic on the same filesystem: readers see
+   either the old or the new file, never a partial one.
+
+`edit_file` additionally holds a per-file lock (`_write_lock`) around
+read + count + write, so concurrent edits of the *same* file serialize.
+
+**Trade-off.** Every edit is a full copy: read the whole file into RAM,
+write the whole new content to tmp, rename. For typical code files (KB range)
+that is < 1 ms — negligible. In-place editing (seek + write only the changed
+segment) would be faster for very large files (100 MB+) or high edit rates,
+but loses crash safety unless the new content is ≤ the old size. The
+copy+rename cost is the right price for "a crash can never corrupt the
+target".
+
 ## What is *not* guarded (yet)
 
 - **Tool execution** runs as the container user (often root). A tool call can
