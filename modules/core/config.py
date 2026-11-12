@@ -18,14 +18,17 @@ KNOWN = {
     "peer_host": str,
     "peer_port": int,   # int or numeric string
     "peer_turn_timeout": int,  # max wall time of a peer turn in seconds
+    "peer_max_hops": int,  # max peer hops in one chain (1 = no multi-hop)
+    "peer_turn_subagents": bool,  # delegate/consult inside peer turns
     "step_timeout": int,  # per-step socket timeout in seconds
     "turn_timeout": int,  # wall-clock timeout per turn in seconds
     "max_turns": int,     # max turns per session, self-loop guard
     "telegram_chats": str,
     "telegram_token": str,
     "telegram_format": str,  # 'text' | 'html' | 'markdown' (default markdown)
+    "telegram_rich": str,  # 'auto' (default) | 'off': rich table detection (Bot API 10.1)
     "colors": dict,  # role -> 0-255 (roles from core.palette.ROLES)
-    "tool_emoji": dict,  # tool -> emoji string (unknown tools fall back to ›)
+    "tool_emoji": dict,  # tool -> emoji string (unknown tools fall back to ▸)
     "auth": dict,  # optional per-server access tokens {url or host:port: token}
 }
 def _ok(v, t):
@@ -61,6 +64,8 @@ def validate(cfg):
                 issues.append(f"swarm[{i}].url expects string, got {type(a['url']).__name__}")
     if "telegram_format" in cfg and cfg["telegram_format"] not in ("text", "html", "markdown"):
         issues.append("telegram_format expects 'text', 'html' or 'markdown'")
+    if "telegram_rich" in cfg and cfg["telegram_rich"] not in ("auto", "off"):
+        issues.append("telegram_rich expects 'auto' or 'off'")
     emoji = cfg.get("tool_emoji")
     if isinstance(emoji, dict):
         for tool, e in emoji.items():

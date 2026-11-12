@@ -13,7 +13,7 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 
 | Variable | cfg key | Default | Meaning |
 |---|---|---|---|
-| `NECRO_BASE_URL` | `baseurl` | `http://192.168.1.131:8080/v1` | OpenAI-compatible inference server URL |
+| `NECRO_BASE_URL` | `baseurl` | `http://127.0.0.1:8080/v1` | OpenAI-compatible inference server URL |
 | `NECRO_MODEL` | `model` | `Qwen3.8-27B` | Main model (ID as delivered by `/models`) |
 | `NECRO_MAX_STEPS` | `max_steps` | `25` | Max agent steps per turn |
 | `NECRO_TURN_TIMEOUT` | `turn_timeout` | `3600` | Wall-clock timeout per turn in s (safety break; 0 = off) |
@@ -56,6 +56,7 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 | `telegram_chats` | str | – | Chat-ID whitelist (comma-separated) |
 | `telegram_token` | str | – | Bot token |
 | `telegram_format` | str | `markdown` | TG format: `text` \| `html` \| `markdown` |
+| `telegram_rich` | str | `auto` | Rich table detection (Bot API 10.1): `auto` \| `off` |
 | `colors` | dict | – | role -> 0-255 (roles from modules/core/palette.py `ROLES`) |
 | `tool_emoji` | dict | – | tool -> emoji string (unknown tools fall back to `›`) |
 | `auth` | dict | – | optional per-server access tokens `{url or host:port: token}`, sent as Bearer auth |

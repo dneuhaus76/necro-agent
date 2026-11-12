@@ -23,9 +23,9 @@ PALETTE = {
     "code-fg": 252,    # light grey - code block text
     "edit-fg": 232,    # faded text on edit diff lines
 }
-EMOJI = {  # tool head symbols (cfg 'tool_emoji' overrides); default "›" for unknown tools
+EMOJI = {  # tool head symbols (cfg 'tool_emoji' overrides); "▸" for unknown tools
     "bash": "🦴", "edit_file": "✒️", "write_file": "✒️", "read_file": "📓",
-    "consult": "🕷️", "delegate": "🕷️", "recall": "🧠", "peer": "💀",
+    "consult": "🕷️", "delegate": "🕷️", "recall": "🧠", "peer": "💀", "grep": "🔍",
     "thinking": "🧠",  # thinking-line prefix (not a tool head)
 }
 ROLES = frozenset(PALETTE)

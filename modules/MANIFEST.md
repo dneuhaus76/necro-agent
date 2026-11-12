@@ -11,6 +11,7 @@ Structure: `modules/core/` (pure logic), `modules/ui/` (rendering/sub-agent), `m
 | core.palette | Central color palette (single source of truth), cfg overrides, tool-emoji defaults | `PALETTE, EMOJI, ROLES, resolve(overrides)` | none |
 | core.config | Reads necro.cfg (JSON), validates keys and types | `validate(cfg)` | core.palette |
 | core.context | Context management (trimming, tool stats) | `trim_tool_results, under_after_trim, tool_stats, delegate_stats, tool_detail` | none |
+| core.filelock | Cross-process file lock (flock on a sidecar `.lock` file) | `file_lock(path, timeout)` (contextmanager) | fcntl, contextlib |
 | core.inference | HTTP connection to the inference server, SSE stream parsing | `open_conn, sse_events` | urllib.parse |
 | core.probe | Inference server probe (model info, thinking detection) | `info_text, resolve, detect_thinking, fetch_model_info, default_info` | urllib.parse, concurrent.futures |
 | core.sessiondb | SQLite session DB (WAL mode, 7-day pruning) | `SessionDB` | none |
@@ -29,7 +30,7 @@ Structure: `modules/core/` (pure logic), `modules/ui/` (rendering/sub-agent), `m
 
 | Module | Purpose | Public API | Dependencies |
 |--------|---------|------------|--------------|
-| io.api | Peer discovery (HTTP, sibling instances) | `local_ip, peer_instances, peer_prompt, PeerAPI, OWN_ID` | http.server, pathlib |
+| io.api | Peer discovery (HTTP, sibling instances), multi-hop chain state (hops/budget in queue + worker), parent-child claims (N226) | `local_ip, peer_instances, peer_health, peer_busy, peer_prompt, peer_claim, peer_excluded_ids, PeerAPI, OWN_ID` | http.server, pathlib |
 | io.swarm | Swarm delegation (agent list, loop check, URL resolve) | `from_env, parse, resolve, agents_str, find, check_once, check_loop` | collections, urllib.parse, core.inference (token_for, lazy) |
 | io.tg | Telegram bot integration (polling, queues) | `TelegramBot` | none |
 | io.tools | Shell tools (bash, grep, read_file, write_file, edit_file) | `run_bash, run_grep, read_file, write_file, edit_file` | modules.ui.render |

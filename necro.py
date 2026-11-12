@@ -3,7 +3,7 @@
 import codecs, hashlib, json, os, select, shutil, signal, socket, subprocess
 import bisect, sys, termios, threading, time, tty
 from pathlib import Path
-VERSION = "0.1.011"  # format: MAJOR.MINOR.PATCH (PATCH 3-stellig, 0-gepaddet)
+VERSION = "0.1.028"  # format: MAJOR.MINOR.PATCH (PATCH 3-stellig, 0-gepaddet)
 def load_cfg():
     """necro.cfg (JSON) from cwd, then from the script dir; env vars take precedence."""
     for d in (Path.cwd(), Path(__file__).resolve().parent):
@@ -38,6 +38,7 @@ def _int(env, cfg_key, default):
         sys.exit(f"necro: {env} (or cfg '{cfg_key}') is not an integer: {v!r}")
 
 MAX_STEPS = _int("NECRO_MAX_STEPS", "max_steps", 25)
+TG_MILESTONE_EVERY = 20  # telegram progress milestone: one message every N steps (was 5)
 # safety breaks for unattended operation (self-loop without user intervention):
 # per-turn wall-clock timeout (100 steps x long tool calls could otherwise run for hours)
 # and a per-session turn cap (the agent can queue its own next prompt via bash/tmux or
@@ -51,6 +52,10 @@ PEER_PORT = _int("NECRO_PEER_PORT", "peer_port", 0)  # 0 = ephemeral
 # max wall time of a peer turn (watchdog + HTTP waits) - a busy peer with long
 # tool calls must not be aborted at the hard-coded 600 s
 PEER_TURN_TIMEOUT = _int("NECRO_PEER_TURN_TIMEOUT", "peer_turn_timeout", 600)
+# multi-hop: max peer hops in one chain (hops=1 = direct call from a local
+# turn; hops=2 = a peer calling another peer). 1 = old behaviour (no multi-hop).
+# default 1 (safety first) - set 2+ for parent-child chains (claims apply).
+PEER_MAX_HOPS = _int("NECRO_PEER_MAX_HOPS", "peer_max_hops", 1)
 # per-step socket timeout - a hung stream (server alive, no data) used to block
 # the turn up to the hard-coded 900 s; now configurable (cfg 'step_timeout' / env)
 STEP_TIMEOUT = _int("NECRO_STEP_TIMEOUT", "step_timeout", 300)
@@ -68,6 +73,9 @@ REMOTE = _flag("NECRO_REMOTE", "remote", False)
 # REMOTE stays the master switch (cfg swarm + peer), PEERING is the narrow one.
 # The cfg swarm list is NOT activated by PEERING (only by REMOTE / NECRO_SWARM).
 PEERING = _flag("NECRO_PEERING", "peering", False)
+# swarm sub-agents (delegate/consult) inside peer turns - off in the old
+# SUB_TOOLS, now a toggle (default on: a peer should be able to use the swarm).
+PEER_TURN_SUBAGENTS = _flag("NECRO_PEER_TURN_SUBAGENTS", "peer_turn_subagents", True)
 REMOTE_ORIG = REMOTE  # swarm resolution uses the original value (PEERING adds no swarm)
 REMOTE = REMOTE or PEERING
 # chat whitelist (env NECRO_TELEGRAM_CHATS or cfg 'telegram_chats', comma-separated
@@ -113,13 +121,15 @@ from modules.ui.render import (cw, sw, clean, chunks, fit, emit,
 from modules.core import palette as _palette
 from modules.ui import render as _render
 _render.set_palette(_palette.resolve(CFG.get("colors")))
-# standard marker: user input, input prompt, fallback for unknown tools
+# standard marker: user input + input prompt
 SYM = "›"
+# fallback marker for everything non-user (unknown tool heads)
+SYM_TOOL = "▸"
 # tool emojis - cfg 'tool_emoji' {tool: emoji} overrides the defaults
 TOOL_EMOJI = dict(_palette.EMOJI)
 if isinstance(CFG.get("tool_emoji"), dict):
     TOOL_EMOJI.update({k: v for k, v in CFG["tool_emoji"].items() if isinstance(v, str)})
-PEER_TAG = TOOL_EMOJI.get("peer", "💀") + " peer"  # peer-line prefix (detection + Peer-API)
+PEER_TAG = TOOL_EMOJI["peer"] + " peer"  # peer-line prefix (detection + Peer-API); default via SSOT (palette.EMOJI), cfg 'tool_emoji' overrides
 from modules.ui.render import CHOCOLATE, GREY, DARK, RED, TELEGRAM, EMBLEM  # noqa: E402
 # DB lives in data/ (WAL mode creates -wal/-shm side files that would clutter the project root)
 DB_PATH = Path(os.environ.get("NECRO_DB", str(Path(__file__).resolve().parent / "data" / "necro.db")))  # per Instanz ueberschreibbar
@@ -187,6 +197,9 @@ def _load_md(filename):
 # AGENTS.md is intentionally NOT loaded (SYSTEM = base + NECRO.md only).
 NECRO_MD_PATH, NECRO_MD = _load_md("NECRO.md")
 AGENTS_MD_PATH, AGENTS_MD = _load_md("AGENTS.md")
+# Peering & Beratung rules (peer-first, peer vs. consult, "gutes Modell", "wann NICHT") -
+# loaded on top of the project instructions so the agent knows the peering conventions
+# without hunting for the file. Small (1.2 KB); independent of NECRO.md/AGENTS.md precedence.
 # pi-style behavioural rules steer the model into proven tool usage (search with
 # grep not cat; small unique edit anchors; offset/limit for large reads) - reduces
 # tool-fails without bloating the context (kept lean).
@@ -239,6 +252,18 @@ if SWARM:
                       "Prefer the most capable agent for complex questions. Agents (duplicate names need 'name@host'): " + _agents,
                       model="Target swarm model name", question="Question or topic for the consultation"))
 SUB_TOOLS = [t for t in TOOLS if t["function"]["name"] not in ("delegate", "consult", "peer")]  # no recursion / ping-pong
+def peer_turn_tools(hops):
+    """multi-hop: toolset of a PEER turn (hops = hop number of this turn,
+    1 = direct call from a local turn). peer: only while hops < PEER_MAX_HOPS
+    (the chain budget in peer_prompt caps the receiver's watchdog); delegate/
+    consult: only when PEER_TURN_SUBAGENTS is on. Local turns are unchanged."""
+    names = {t["function"]["name"] for t in TOOLS}
+    keep = set(names) - {"delegate", "consult", "peer"}
+    if hops < PEER_MAX_HOPS:
+        keep.add("peer")
+    if PEER_TURN_SUBAGENTS:
+        keep |= {"delegate", "consult"} & names
+    return [t for t in TOOLS if t["function"]["name"] in keep]
 PEER_TOOL = tool("peer", "Delegate a full agent turn to a sibling NECRO instance on this machine "
                   "(own context, own model - it runs the task in its own UI and returns the final reply). "
                   "Use for parallel work or when the sibling has a different model. "
@@ -249,15 +274,24 @@ PEER_TOOL = tool("peer", "Delegate a full agent turn to a sibling NECRO instance
 if REMOTE:  # peer-API / sibling instances are a remote feature - off by default
     TOOLS.append(PEER_TOOL)
 def peer_refresh():
-    """Refresh the peer tool description with the current sibling instances (discovery files)."""
+    """Refresh the peer tool description with the current sibling instances (discovery files).
+    Each instance shows its busy status (cached, 5 s TTL) - idle peers are
+    preferred for routing (see Agent._tool_peer). Grandchildren (claimed
+    by my children) stay out of the list - parent-child routing only."""
     ps = []
     try:
-        from modules.io.api import peer_instances, OWN_ID
-        ps = [x for x in peer_instances() if x["id"] != OWN_ID]  # not myself (PID is not unique across containers)
+        from modules.io.api import peer_instances, peer_busy, OWN_ID, peer_excluded_ids
+        excl = peer_excluded_ids()
+        ps = [x for x in peer_instances()  # not myself (PID is not unique across containers)
+              if x["id"] != OWN_ID and x["id"] not in excl]
     except Exception as e:
         print(f"necro: peer discovery failed: {type(e).__name__}: {e}", file=sys.stderr)
+    def _line(p):
+        b = peer_busy(p)  # True/False/None (unknown)
+        state = "busy" if b else "idle" if b is False else "status unknown"
+        return f"{p['id']} (pid {p['pid']}, {p['cwd']}, {state})"
     PEER_TOOL["function"]["description"] = PEER_TOOL["function"]["description"].rsplit("Instances: ", 1)[0] + \
-        ("Instances: " + "; ".join(f"{p['id']} (pid {p['pid']}, {p['cwd']})" for p in ps) if ps
+        ("Instances: " + "; ".join(_line(p) for p in ps) if ps
          else "Instances: (none - no sibling NECRO running)")
 def peer_status_loop(app, blk):
     """Delayed peer status for the Peer-API line (like the model probe in
@@ -306,6 +340,7 @@ class App(KeyHandler):
         self._queued, self._queued_text, self._queued_block = False, "", None  # queued prompt state
         self._tg_queued = None  # (text, chat_id, sender) queued while busy: runs right after this turn
         self._spin = " "  # last drawn spinner frame; a tick without content change redraws only the header
+        self._last_reply = None  # dict of the last assistant message appended in a turn (peer reply lookup)
         self._last_cursor = None  # (abs row, col) of the wanted physical cursor position
         self._last_input_rows = set()  # rows holding input lines (resize cleanup)
         self._last_view = {}  # row -> last written line (incremental draw)
@@ -385,14 +420,14 @@ class App(KeyHandler):
             for ln in t.split("\n"):
                 L += [emit([(c, "")], EMBLEM) for c in chunks(ln, w)]
         elif k == "think":
+            # the head line stays visible in both states (expanded = body below it)
+            L = [emit([(TOOL_EMOJI["thinking"] + " thinking..." + ("" if self.think else " (Ctrl-t to show)"), "i")], DARK)]  # default via SSOT (palette.EMOJI); cfg 'tool_emoji' overrides
             if self.think:
                 for ln in t.strip("\n").split("\n"):
                     L += [emit(l, DARK, "┊ ") for l in wrap_segs([(ln, "i")], w - 2)]
-            else:
-                L = [emit([(TOOL_EMOJI.get("thinking", "🧠") + " thinking... (Ctrl-t to show)", "i")], DARK)]  # emoji via SSOT (cfg-overridable)
         elif k == "tool":
             head, *body = t.rstrip().split("\n")
-            sym = TOOL_EMOJI.get((head.split() or ["?"])[0], SYM)  # cfg 'tool_emoji' overrides
+            sym = TOOL_EMOJI.get((head.split() or ["?"])[0], SYM_TOOL)  # cfg 'tool_emoji' overrides
             is_edit = head.startswith("edit_file")
             is_recall = head.startswith("recall")
             # recall: compact italic head "recall…" (verbose results stay out of the way);
@@ -400,6 +435,9 @@ class App(KeyHandler):
             head_segs = [("recall…", "i")] if is_recall else [(head, "b")]
             # swarm/peer tools are highlighted in necro green (EMBLEM) instead of dark
             head_color = EMBLEM if (head.split() or ["?"])[0] in ("consult", "peer", "delegate") else DARK
+            # a hidden body keeps the head visible with a toggle hint (like the think line)
+            if body and not (self.show_edits if is_edit else self.show_tools):
+                head_segs.append((" (Ctrl-x to show)" if is_edit else " (Ctrl-o to show)", "i"))
             for j, l in enumerate(wrap_segs(head_segs, w - 2)):
                 L.append(emit(l, head_color, (sym + " ") if j == 0 else " " * sw(sym)))
             if (self.show_edits if is_edit else self.show_tools) and body:
@@ -610,6 +648,8 @@ class App(KeyHandler):
         self.db_sync()
         self.scroll, self.busy = 0, True
         self.stop.clear()
+        if chat_id is not None:  # telegram: the bot is busy now (cleared with 'done' at turn end)
+            self.tg.send(chat_id, "🕸 busy")
         threading.Thread(target=self.turn, args=() if chat_id is None else (chat_id,), daemon=True).start()
     def clear_session(self):
         """New session: reset blocks + context (shared by TUI /clear, TG /new, Ctrl-C)."""
@@ -715,7 +755,9 @@ class App(KeyHandler):
             return
         verdict = ""
         try:
-            log = (Path(__file__).resolve().parent / "log" / "log.md").read_text(encoding="utf-8")
+            from modules.core.filelock import file_lock  # log.md is written via write_file/edit_file
+            with file_lock(Path(__file__).resolve().parent / "log" / "log.md"):
+                log = (Path(__file__).resolve().parent / "log" / "log.md").read_text(encoding="utf-8")
             for ln in log.splitlines():
                 if "VERDICT:" in ln:
                     verdict = ln.strip().lstrip("- ").strip()
@@ -735,7 +777,7 @@ class App(KeyHandler):
             return
         if (s := self.tg.stranger()) is not None:  # stranger touched the bot
             chat_id, sender = s
-            self.tg.send(chat_id, "f u & leave me alone")
+            self.tg.send(chat_id, "you are not permitted in this chat")
             for cid in self.tg_chats:  # alert me (ID + name)
                 self.tg.send(cid, f"telegram: stranger {chat_id} ({sender}) touched the bot")
             self.dirty = True
@@ -760,6 +802,8 @@ class App(KeyHandler):
         # structured turn trace (traces table in necro.db) - one row per turn
         # + measurable tool-call metrics (quality: fails, tokens: chars, speed: ms)
         t0, tools, err = time.monotonic(), [], None
+        t_turns = self.turns  # turn counter at entry - the finally must not clobber a newer turn's state
+        t_steps = None  # step count at exit (set at the break - the new turn may have reset self.step)
         tool_fails, tool_chars, tools_ms = 0, 0, 0
         tool_items = []  # (name, result, ms) per call - per-tool breakdown in the trace
         self.agent.reset_counters()  # per-turn delegation counters
@@ -773,7 +817,8 @@ class App(KeyHandler):
         if chat_id is not None:
             self.tg.typing(chat_id)  # show "typing…" while we work
             threading.Thread(target=ticker, daemon=True).start()
-        tg_milestone = 0  # progress milestone every 5 tool steps (telegram turns only)
+        tg_milestone = 0  # progress milestone every TG_MILESTONE_EVERY steps (telegram turns only)
+        self._last_turn_error = None  # abort reason for the peer reply (do_POST reads it)
         try:
             self.turns += 1
             if MAX_TURNS and self.turns > MAX_TURNS:  # per-session turn cap
@@ -788,22 +833,56 @@ class App(KeyHandler):
                     self.dirty = True  # step counter in the header must refresh
                 if self.stop.is_set():
                     raise RuntimeError("aborted")
+                if self._queued:  # queued prompt runs at the next step boundary
+                    # (before the agent decides its next action) instead of waiting
+                    # for the whole turn - the user's input gets attention earlier.
+                    # The old turn only runs its finally after this (no more stop
+                    # checks, no second submit); the new turn starts in a thread.
+                    self._queued = False
+                    t = self._queued_text
+                    self._queued_text = ""
+                    self.stop.clear()  # a user abort of THIS turn must not kill the new one
+                    t_steps = self.step  # trace this turn's step count (the new turn resets self.step)
+                    self.busy = False  # submit() must start a new turn, not re-queue
+                    if self._queued_block is not None:  # the prompt runs NOW, not "after the turn"
+                        self._queued_block.text = "(Started early at the step boundary)\n" + t
+                        self._queued_block = None
+                    threading.Thread(target=self.submit, args=(t,), daemon=True).start()
+                    # wait until the new turn has actually started (turns incremented)
+                    # so the finally guard below can tell the two turns apart; a queued
+                    # command (/help, /clear, ...) starts no turn -> the wait times out
+                    deadline = time.monotonic() + 5
+                    while self.turns <= t_turns + 1 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    break  # the old turn is done - its finally must not clobber the new turn
                 if TURN_TIMEOUT and time.monotonic() - t0 > TURN_TIMEOUT:  # wall-clock safety break
                     raise TimeoutError(f"turn timeout after {TURN_TIMEOUT} s (NECRO_TURN_TIMEOUT)")
                 if REMOTE:  # the peer tool only exists in remote mode - don't glob
                     peer_refresh()  # /tmp + liveness-check siblings for a tool that is not registered
                 self.agent.compact()
-                # peer turn uses SUB_TOOLS (no peer tool) to avoid recursion/409
-                text, calls = self.agent.stream(tools=SUB_TOOLS if getattr(self, '_peer_turn', False) else None)
+                # peer turn: dynamic toolset - peer tool only while
+                # hops < PEER_MAX_HOPS, delegate/consult only when PEER_TURN_SUBAGENTS
+                if getattr(self, '_peer_turn', False):
+                    text, calls = self.agent.stream(tools=peer_turn_tools(getattr(self, '_peer_hops', 1)))
+                else:
+                    text, calls = self.agent.stream()
                 m = {"role": "assistant", "content": text or None}
                 if calls:
                     m["tool_calls"] = [{"id": c["id"], "type": "function", "function": {
                         "name": c["name"], "arguments": c["args"] or "{}"}} for c in calls]
                 self.messages.append(m)
+                self._last_reply = m  # identity for the peer reply lookup (modules/io/api.py)
                 if not calls:
                     self.db_sync()
                     if chat_id is not None:  # final reply of a telegram turn goes back to the chat
+                        self.tg.send(chat_id, "✅ done")
                         self.tg.send(chat_id, text or "(no output)")
+                    elif not text.strip():
+                        # a turn that produced only reasoning (no content, no
+                        # tool calls) ends silently in the TUI - the user sees the
+                        # thinking block, then an idle prompt, and assumes it stalled.
+                        # Show a marker so "done with no visible output" is visible.
+                        self.add("info", "(no output - turn ended with reasoning only)")
                     return
                 tt = time.monotonic()
                 results = []
@@ -830,18 +909,25 @@ class App(KeyHandler):
                     p_wall += int((time.monotonic() - tt) * 1000)
                     p_sum += sum(ms for _, _, ms in tool_items[-len(calls):])
                 self.db_sync()
-                if chat_id is not None and i % 5 == 4:  # progress milestone every 5 steps
+                if chat_id is not None and i % TG_MILESTONE_EVERY == TG_MILESTONE_EVERY - 1:  # progress milestone
                     tg_milestone += 1
                     self.tg.send(chat_id, f"⏳ milestone {tg_milestone}: step {i + 1}/{MAX_STEPS}")
             self.add("info", f"max steps ({MAX_STEPS}) reached")
         except Exception as e:
-            err = "aborted" if self.stop.is_set() else f"{type(e).__name__}: {e}"
+            if self.stop.is_set():
+                # a watchdog timeout sets stop too - tell them apart so the
+                # parent (do_POST) can report "turn timeout" instead of "aborted"
+                wd = getattr(self, "_watchdog_fired", None)
+                err = f"turn timeout (watchdog, {wd} s)" if wd else "aborted"
+            else:
+                err = f"{type(e).__name__}: {e}"
+            self._last_turn_error = err  # abort reason for the peer reply (do_POST)
             self.add("error", err)  # aborted gets the error colour, like an LLM connection failure
         finally:
             try:  # the trace must not break the turn (e.g. disk full)
                 self.sessions.trace(ts=time.strftime("%Y-%m-%dT%H:%M:%S"), model=self.model,
                                     session=os.environ.get("NECRO_SESSION", "run"),
-                                    steps=self.step, tools=tools, error=err,
+                                    steps=t_steps if t_steps is not None else self.step, tools=tools, error=err,
                                     tool_fails=tool_fails, tool_chars=tool_chars, tools_ms=tools_ms,
                                     tool_detail=tool_detail(tool_items),  # per-tool breakdown
                                     delegates=delegate_stats(tool_items, self.agent._deleg_fallbacks,
@@ -855,8 +941,11 @@ class App(KeyHandler):
             stop_ticker.set()
             if done is not None:
                 done.set()
-            self.busy, self.dirty, self.tab_hint, self.menu = False, True, "", None  # queued prompt: hint goes away
-            self.step = 0  # step counter reset (state leak: it would survive an aborted turn)
+            # a queued prompt may have started a NEW turn before this finally
+            # runs - its busy/step state must not be clobbered by this one
+            if self.turns == t_turns + 1:  # no newer turn started while this one was winding down
+                self.busy, self.step = False, 0  # step reset (state leak: it would survive an aborted turn)
+            self.dirty, self.tab_hint, self.menu = True, "", None  # queued prompt: hint goes away
             if self._queued:  # queued prompt: runs right after this turn
                 self._queued = False
                 t = self._queued_text
@@ -891,7 +980,7 @@ def startup_info(app):
         if app.peer.bind_error:
             app.add("error", f"Peer-API bind failed ({app.peer.bind_error}) - fallback to {app.peer.host}:{app.peer.port}")
         # neutral at startup; peer_status_loop turns it green while a peer is online
-        peer_blk = app.add("info", f"Peer-API: {app.peer.host}:{app.peer.port} (v{VERSION}, id {app.peer.id}, {PEER_DIR / ('necro-' + app.peer.id + '.json')})", color=DARK)
+        peer_blk = app.add("info", f"Peer-API: {app.peer.host}:{app.peer.port} (id {app.peer.id}, {PEER_DIR / ('necro-' + app.peer.id + '.json')})", color=DARK)
         threading.Thread(target=peer_status_loop, args=(app, peer_blk), daemon=True).start()
     if app.tg is not None:
         app.add("info", "Telegram: active (long polling, api.telegram.org)", color=TELEGRAM)  # necro_telegram
@@ -913,6 +1002,7 @@ def main():
         else:
             from modules.io.tg import TelegramBot  # lazy: only when --telegram / NECRO_TELEGRAM=1
             app.tg = TelegramBot(token, fmt=str(CFG.get("telegram_format", "markdown")).lower(),
+                                 rich=str(CFG.get("telegram_rich", "auto")).lower(),
                                  whitelist=TG_CHATS)  # stranger routing + token guard
             app.tg_chats = TG_CHATS  # run summary + stranger alerts
             # once on (re)start, greet the whitelisted chats so the user knows the bot is up

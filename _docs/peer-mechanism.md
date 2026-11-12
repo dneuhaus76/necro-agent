@@ -38,6 +38,30 @@ When the agent invokes the `peer` tool (e.g. `peer:fd17831a` with a task):
 5. **Waits up to `peer_turn_timeout` seconds** (default 600, cfg/env configurable; watchdog) for the result.
 6. Returns `{result: text, tool_calls: count}`.
 
+### Parent-Child Tree (N226 claims)
+
+Peering is parent-child, not flat: a source must not address a **grandchild**
+directly (route via the child, not around it).
+
+1. When node X calls node Y, X notifies its own parent P (if X is a peer turn,
+   i.e. `_peer_from` is set): `POST /api/claim {child: Y, op: claim}`.
+2. P records the claim (`_PEER_CLAIMS`) and **excludes Y from its peer list** —
+   both in the tool description (`peer_refresh`) and in `_tool_peer` routing.
+   An explicit target on a claimed grandchild gets a clear error.
+3. When Y's turn finishes (or fails), X sends `op: release` — Y becomes directly
+   addressable again.
+
+Claims are **best-effort** (2 s timeout, no retry): a lost notification only
+weakens the topology hint, it never breaks the chain. Backstops:
+
+- **TTL** (`PEER_CLAIM_TTL`, 900 s): a crashed claimer cannot hold a claim
+  forever (the chain budget is shorter).
+- **Discovery**: dead peers drop out of the list anyway, so a claim on a dead
+  id is inert.
+
+Own children are NOT excluded for the parent (re-calling a child just queues
+behind its running turn — still parent-child).
+
 ### Recursion Guard
 
 Peer turns use `SUB_TOOLS` — the full tool list **minus** `delegate`, `consult`, and `peer`. This prevents a delegated peer from recursively calling another peer, which would cause a `409` loop.

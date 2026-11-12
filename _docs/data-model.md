@@ -41,6 +41,13 @@ second instance then got "database is locked". Fix: every change in an
 explicit transaction, connections protected across threads via `_lock`
 (SQLite C connections are not thread-safe).
 
+File writes (`write_file`/`edit_file`) are serialized across PROCESSES via
+`modules/core/filelock.py` (`fcntl.flock` on a per-file `<name>.lock` file,
+0 bytes, stays in place). The lock file is used instead of the data file
+because `os.replace` swaps the data file's inode. Locks release on FD close
+(also on crash) – no stale-lock problem. Works across the bind mounts here
+(same underlying volume); not portable to NFSv3 without flock support.
+
 ## 7-Day Pruning
 
 On open, turns/sessions/traces older than 7 days are deleted. This is the

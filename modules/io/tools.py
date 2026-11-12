@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from modules.core.filelock import file_lock
 from modules.ui.render import diff_view
 BASH_TIMEOUT = 120  # s, wall-time cap of the bash tool (SSOT: run_bash default, tool description, timeout notes)
 TOOL_OUT_CAP = 8000  # max chars of tool output sent to the model (bash + grep)
@@ -107,16 +108,6 @@ def read_file(path, offset=1, limit=0):
     else:
         shown = len(sel)
     return f"[lines {off}-{off + shown - 1} of {len(lines)}]\n" + body
-_WRITE_LOCKS = {}  # resolved path -> Lock; serializes read-modify-write per file
-_WRITE_LOCKS_GUARD = threading.Lock()
-def _write_lock(path):
-    """Per-file lock: tools run in parallel (ThreadPoolExecutor), and two
-    concurrent edits of the SAME file would otherwise race - both read the old
-    content, both write, and one edit is silently lost (or the shared .tmp is
-    moved by the first os.replace, so the second fails with FileNotFoundError)."""
-    key = str(Path(path).expanduser().resolve())
-    with _WRITE_LOCKS_GUARD:
-        return _WRITE_LOCKS.setdefault(key, threading.Lock())
 def _atomic_write(p, text):
     """Write via a temp file + rename: a crash mid-write cannot corrupt the target.
     The tmp name is unique per thread (pid + thread id) - a leftover .tmp of a
@@ -141,7 +132,7 @@ def write_file(path, content):
             return f"error: {cur} is a file (not a directory)"
         cur = cur.parent
     p.parent.mkdir(parents=True, exist_ok=True)
-    with _write_lock(p):
+    with file_lock(p):  # flock serializes inter- AND intra-process; one lock layer
         _atomic_write(p, content)
     return f"wrote {len(content)} chars to {p}"
 def edit_file(path, old, new):
@@ -150,7 +141,7 @@ def edit_file(path, old, new):
     p = Path(path).expanduser()
     if p.is_dir():
         return f"error: {p} is a directory"
-    with _write_lock(p):  # read + count + write as one critical section (see _write_lock)
+    with file_lock(p):  # flock serializes inter- AND intra-process; read+count+write as one critical section
         s = p.read_text(errors="replace")
         if (k := s.count(old)) != 1:
             return f"error: old text found {k}x (exactly 1 required)"

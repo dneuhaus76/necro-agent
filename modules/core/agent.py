@@ -4,9 +4,11 @@ Pure logic: no TUI. The App is passed in and used for shared state
 (messages, model, ctx, stop, conns) and UI hooks (add/append/set_head).
 Config values (base url, timeouts, tool lists, swarm) are injected at
 construction so this module has no import dependency on necro.py."""
+import hashlib
 import json
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -18,6 +20,51 @@ from modules.ui.subagent import progress_head, subagent_prompt
 CONSULT_TRIM = 2000  # max chars per message in the consult remote context
 RETRY_ATTEMPTS = 8  # fast start - the inference server may still load the model
 RETRY_MAX_WAIT = 10  # cap (s) for the exponential backoff between attempts
+
+# the model sometimes emits the same peer call twice in one step (parallel
+# tool calls, identical instruction). run_calls fires both in parallel -> two POSTs
+# to the same peer. Dedup: an identical in-flight call is waited on, not re-fired.
+_PEER_INFLIGHT = {}  # key (peer_id, task-digest) -> {"lock", "done", "result"}
+_PEER_INFLIGHT_GUARD = threading.Lock()
+
+
+def _peer_inflight_slot(key):
+    """Get-or-create the dedup slot for key; opportunistically prune finished
+    slots so the dict stays bounded (a waiter already holds its own slot object,
+    so dropping the dict entry is safe)."""
+    with _PEER_INFLIGHT_GUARD:
+        if len(_PEER_INFLIGHT) > 256:  # cap: drop finished (not locked) slots
+            for k in [k for k, s in _PEER_INFLIGHT.items() if not s["lock"].locked()]:
+                del _PEER_INFLIGHT[k]
+        s = _PEER_INFLIGHT.get(key)
+        if s is None:
+            s = {"lock": threading.Lock(), "done": threading.Event(), "result": None}
+            _PEER_INFLIGHT[key] = s
+        return s
+
+
+def _peer_call_dedup(key, fn):
+    """Run fn() for key; if an identical call is already in flight, wait for it
+    and return its result (or re-raise its exception) instead of firing a second
+    request."""
+    slot = _peer_inflight_slot(key)
+    if not slot["lock"].acquire(blocking=False):  # an identical call owns the slot
+        slot["done"].wait()
+        if slot.get("error") is not None:
+            raise slot["error"]
+        return slot["result"]
+    slot["done"].clear()  # fresh run - a previous finished result is stale now
+    slot["error"] = None
+    try:
+        res = fn()
+        slot["result"] = res
+        return res
+    except Exception as e:
+        slot["error"] = e
+        raise
+    finally:
+        slot["done"].set()
+        slot["lock"].release()
 
 
 class Agent:
@@ -331,31 +378,78 @@ class Agent:
     def _tool_grep(self, a, blk):
         return tools.run_grep(a["pattern"], a.get("path") or ".")
 
+    def _swarm_offline_err(self, ag):
+        """pre-flight: the background check marked this agent offline - fail fast
+        instead of burning a request on a dead host (consult has no fallback)."""
+        return (f"error: swarm agent '{ag['model']}' is offline (background check, "
+                f"status may be up to 30 s stale) - retry later")
+
     def _tool_delegate(self, a, blk):
         ag, err = swarm_find(a["model"], self.swarm, self.base, self.app.model)
         if err:
             return err
+        if self.swarm_up.get((ag["url"], ag["model"])) is False:
+            return self._swarm_offline_err(ag)
         return self.delegate(ag, a["task"], blk)
 
     def _tool_consult(self, a, blk):
         ag, err = swarm_find(a["model"], self.swarm, self.base, self.app.model)
         if err:
             return err
+        if self.swarm_up.get((ag["url"], ag["model"])) is False:
+            return self._swarm_offline_err(ag)
         return self.consult(ag, a["question"], blk)
 
     def _tool_peer(self, a, blk):
-        from modules.io.api import peer_instances, peer_prompt, peer_health, OWN_ID
-        ps = [x for x in peer_instances() if x["id"] != OWN_ID]  # not myself
+        from modules.io.api import (peer_instances, peer_prompt, peer_health, peer_busy, OWN_ID,
+                                    peer_claim, peer_excluded_ids)
+        app = self.app
+        # multi-hop: in a peer turn the sender (app._peer_from) is excluded -
+        # no bounce back to the caller, only forward peers (chain, not ping-pong)
+        frm = getattr(app, "_peer_from", None)
+        # parent-child: grandchildren (claimed by my children) are not direct
+        # targets - route via the child, not around it
+        excl = peer_excluded_ids()
+        ps = [x for x in peer_instances() if x["id"] != OWN_ID and x["id"] != frm and x["id"] not in excl]
         if not ps:
-            return "error: no sibling NECRO instance found"
-        p = next((x for x in ps if x["id"] == a.get("instance")), None) or ps[0]
+            extra = f" (excluded grandchildren: {', '.join(sorted(excl))})" if excl else ""
+            return f"error: no sibling NECRO instance found{extra}"
+        p = next((x for x in ps if x["id"] == a.get("instance")), None)
+        if p is None and a.get("instance") in excl:
+            return f"error: peer {a['instance']} is a grandchild (claimed by a child) - route via your child"
+        if p is None:  # no explicit target: idle peers first (cached status)
+            idle = [x for x in ps if peer_busy(x) is False]
+            p = idle[0] if idle else ps[0]
+        hops = getattr(app, "_peer_hops", 0) + 1  # 1 = direct call from a local turn
         if blk is not None:  # live progress: show the contacted peer id (primary terminal)
-            self.app.set_head(blk, f"peer  [{p['id']}] contacting...")
+            self.app.set_head(blk, f"peer  [{p['id']}] (hop {hops})")
+        app.add("info", f"peer hop {hops}: {OWN_ID or '?'} -> {p['id']}")  # chain trace
         _, err = peer_health(p)  # reachability check before sending a big task
         if err:
             return f"error: peer {p['id']} not reachable ({err})"
         # no busy check - the peer queues the turn (waits for the running one)
-        return peer_prompt(p, a["task"])  # HTTP call lives in modules/io/api.py
+        # remaining chain wall-clock (set by the peer-turn worker that runs
+        # this turn) - None on a direct call from a local turn (the receiver's own
+        # peer_turn_timeout bounds it)
+        t0, budget_total = getattr(app, "_chain_t0", None), getattr(app, "_chain_budget", None)
+        budget = max(1, int(budget_total - (time.monotonic() - t0))) if t0 is not None else None
+        # my parent (if this is a peer turn) must not see p as a direct
+        # target while p's turn runs - claim before, release after (best-effort)
+        parent = next((x for x in peer_instances() if x["id"] == frm), None) if frm else None
+        if parent:
+            peer_claim(parent, p["id"], "claim")
+        # dedup an identical in-flight peer call (same target + same task)
+        # - the model sometimes emits it twice in one step and run_calls fires both
+        # in parallel; the second one waits on the first instead of re-firing.
+        # role prefix - the sibling knows who its parent is and that it
+        # must not peer back (the parent is blocked waiting for its answer).
+        task = f"You are sibling of [{OWN_ID}] – don't peer back, I'm waiting for your final answer.\n\n{a['task']}"
+        key = (p["id"], hashlib.sha1(task.encode()).hexdigest())
+        try:
+            return _peer_call_dedup(key, lambda: peer_prompt(p, task, hops=hops, budget_left=budget))
+        finally:
+            if parent:
+                peer_claim(parent, p["id"], "release")
 
     def _tool_read(self, a, blk):
         return tools.read_file(a["path"], a.get("offset"), a.get("limit"))

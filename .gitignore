@@ -4,9 +4,11 @@
 !README.md
 !LICENSE
 !_docs/
+_docs/*.lock
 !modules/
 !emblem
+!NECRO.md
 !.gitignore
-
 **/__pycache__/
 *.pyc
+*.lock
