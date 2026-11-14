@@ -101,28 +101,87 @@ class SessionDB:
         """Mirror the active context (all messages except system) into the turns table.
         incremental - rows that leave the context (compact() replaced the head
         with a summary) are kept and marked compacted=1 so recall() still finds the
-        original text instead of only the summary; the shared prefix is reused."""
+        original text instead of only the summary.
+        Matching is the LONGEST SUFFIX of the new context whose identity keys equal
+        the tail of the stored (non-compacted) rows:
+        - append: the old rows are a prefix of the new context -> match_len == len(old),
+          nothing is marked compacted, only the new tail is inserted. (A set-based
+          match marked the old prefix rows 'gone' on EVERY append and re-inserted
+          them - unbounded DB growth.)
+        - compact: the head is replaced by a summary -> the surviving tail is
+          recognised, the old head rows are marked compacted, only the summary
+          (and any new tail) is inserted.
+        - trim_tool_results(): a tool row keeps its identity (tool_call_id) -> the
+          match is unaffected and the row is not duplicated.
+        The DB keeps the ORIGINAL (untrimmed) content: recall searches history,
+        the trimmed copy is only the live-context optimisation."""
         rows = [(m.get("role"), m.get("content"),
                  json.dumps(m.get("tool_calls") or [], ensure_ascii=False) if m.get("tool_calls") else None,
                  m.get("tool_call_id")) for m in messages[1:]]
         ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        def key(r):
+            # identity of one context message (stable across trims/compacts).
+            # assistant rows carry their tool_calls: every ReAct step emits an
+            # assistant message with content=None + tool_calls, and without them
+            # ALL of them collapse onto ("c", "assistant", None) -> only the
+            # first one is ever inserted (data loss, DB != context).
+            # tool rows keep tool_call_id (stable across trim_tool_results).
+            if r[0] == "tool" and r[3]:
+                return ("t", r[3])
+            tc = r[2] if r[0] == "assistant" else None
+            return ("c", r[0], r[1], tc)
         with self._lock:
             # explicit transaction: autocommit mode would leave the session with an empty
             # turns table if a crash happens between the DELETE and the INSERTs (F4)
             self.db.execute("BEGIN IMMEDIATE")
             try:
-                old = self.db.execute("SELECT id, role, content FROM turns WHERE session = ? ORDER BY id",
+                # only NON-compacted rows may be recognised as the surviving tail:
+                # a compacted row that reappears in the context is a NEW message
+                # (re-inserted fresh, compacted=0), not the old one
+                old = self.db.execute("SELECT id, role, content, tool_calls, tool_call_id FROM turns WHERE session = ? AND compacted = 0 ORDER BY id",
                                       (self.session_id,)).fetchall()
-                k = 0
-                while (k < len(old) and k < len(rows) and old[k][1] == rows[k][0]
-                       and (old[k][2] or None) == (rows[k][1] or None)):
-                    k += 1
-                for oid, _, _ in old[k:]:  # fell out of the context (compacted head): keep + mark
-                    self.db.execute("UPDATE turns SET compacted = 1 WHERE id = ?", (oid,))
-                if k < len(rows):
+                old_keys = [key((r[1], r[2], r[3], r[4])) for r in old]
+                new_keys = [key(r) for r in rows]
+                # Two-phase match (the context only ever changes by APPEND or
+                # COMPACT, so two cases cover it):
+                # 1) append: the stored rows are a PREFIX of the new context ->
+                #    nothing is compacted, only the appended tail is inserted.
+                #    (Checked first: it is the common case and is unambiguous,
+                #    even with duplicate content.)
+                # 2) compact: the head was replaced by a summary -> the surviving
+                #    tail (a suffix of the stored rows) is found in the new
+                #    context; the old head rows before it are marked compacted,
+                #    the summary (and any new tail) is inserted.
+                # A pure set match re-inserts the old prefix on every append
+                # (unbounded growth); a pure positional prefix match breaks with
+                # duplicate content. This two-phase match handles both.
+                is_prefix = len(new_keys) >= len(old_keys) and \
+                    all(old_keys[i] == new_keys[i] for i in range(len(old_keys)))
+                if is_prefix:
+                    cut, new_rows = 0, rows[len(old_keys):]
+                else:
+                    match_k, match_pos = 0, 0
+                    for k in range(min(len(old_keys), len(new_keys)), 0, -1):
+                        blk = old_keys[-k:]
+                        for pos in range(len(new_keys) - k + 1):
+                            if new_keys[pos:pos + k] == blk:
+                                match_k, match_pos = k, pos
+                                break
+                        if match_k:
+                            break
+                    cut = len(old_keys) - match_k  # stored rows before the match
+                    new_rows = rows[:match_pos] + rows[match_pos + match_k:]
+                if cut:
+                    self.db.execute(f"UPDATE turns SET compacted = 1 WHERE id IN ({','.join('?' * cut)})",
+                                    [r[0] for r in old[:cut]])
+                # identity-set guard: a row whose identity already exists (e.g.
+                # duplicate content) is not re-inserted
+                old_id_set = set(old_keys)
+                to_insert = [r for r in new_rows if key(r) not in old_id_set]
+                if to_insert:
                     self.db.executemany("INSERT INTO turns (session, ts, role, content, tool_calls, tool_call_id) "
                                         "VALUES (?,?,?,?,?,?)",
-                                        [(self.session_id, ts, r, c, tc, tci) for r, c, tc, tci in rows[k:]])
+                                        [(self.session_id, ts, r[0], r[1], r[2], r[3]) for r in to_insert])
                 self.db.execute("COMMIT")
             except Exception:
                 self.db.execute("ROLLBACK")

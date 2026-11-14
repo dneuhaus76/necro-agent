@@ -63,8 +63,11 @@ def find(name, swarm, base, model):
     if best and difflib.SequenceMatcher(None, name, best["model"]).ratio() > 0.6:
         err += f" - did you mean '{best['model']}'?"
     return None, err
-CHECK_ATTEMPTS = 3  # one GET /models can fail transiently - retry before marking offline
-CHECK_RETRY_DELAY = 0.5  # s between attempts (worst case per agent: ~10 s, background thread)
+CHECK_ATTEMPTS = 2  # one GET /models can fail transiently - retry before marking offline
+                     # (2 attempts: worst case 2*(3+0.5)=7 s/agent, 3 agents = 21 s < 30 s
+                     #  check interval - a 3rd attempt would push the full pass to 31.5 s,
+                     #  exceeding the interval and doubling the effective status latency)
+CHECK_RETRY_DELAY = 0.5  # s between attempts (worst case per agent: ~7 s, background thread)
 def _probe(url, token):
     """One availability ping (GET /models, 3 s timeout); raises on any failure."""
     import http.client

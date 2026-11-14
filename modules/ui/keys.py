@@ -1,18 +1,11 @@
 """Key handling: key dispatch, TAB completion, history navigation,
-CSI sequences, mouse mode, raw input feed.
+CSI sequences, raw input feed.
 
 Mixin for the App class (necro.py) - pure logic, no TUI draw calls, so it
 stays in the ui layer with no dependencies beyond the stdlib (layer rule:
 ui imports only core.palette).
 """
 import os, re, shutil, time
-
-# ?1000 = base mouse mode (wheel + clicks), ?1006 = SGR encoding. Both are
-# required: tmux 3.5a only forwards the wheel to the app when a base mode is set
-# (mouse_any_flag checks 1000/1002/1003, not 1006) - otherwise the wheel falls
-# into tmux copy-mode (scrollback = "command history") instead of the window content
-MOUSE_ON = b"\x1b[?1000h\x1b[?1006h"
-MOUSE_OFF = b"\x1b[?1000l\x1b[?1006l"
 
 
 class KeyHandler:
@@ -42,21 +35,6 @@ class KeyHandler:
             self.show_tools = not self.show_tools
         elif c == "\x18":
             self.show_edits = not self.show_edits
-        elif c == "\x01":
-            self.cur = 0
-        elif c == "\x05":
-            self.cur = len(b)
-        elif c == "\x0b":
-            self.buf = b[:cur]
-        elif c == "\x15":
-            self.buf, self.cur = b[cur:], 0
-        elif c == "\x17":
-            j = cur
-            while j and b[j - 1] == " ":
-                j -= 1
-            while j and b[j - 1] != " ":
-                j -= 1
-            self.buf, self.cur = b[:j] + b[cur:], j
         elif c == "\x09":
             self.tab_complete()
         elif c >= " ":
@@ -114,7 +92,9 @@ class KeyHandler:
         d, name = os.path.split(word)
         d = d or "."
         try:
-            entries = [e for e in os.listdir(d) if not e.startswith(".")]
+            # .lock files are 0-byte flock artifacts (file_lock), not real user
+            # files - exclude them so TAB completes to the data file, not the lock.
+            entries = [e for e in os.listdir(d) if not e.startswith(".") and not e.endswith(".lock")]
         except OSError:
             return  # unreadable dir: leave the word alone
         cands = [e for e in entries if e.startswith(name)]
@@ -166,21 +146,6 @@ class KeyHandler:
             self.scroll = max(0, self.scroll - page)
         elif f == "~" and p == "3":
             self.buf = self.buf[:self.cur] + self.buf[self.cur + 1:]
-        elif f == "~" and p == "24":  # F12: toggle mouse mode
-            self.toggle_mouse()
-    def toggle_mouse(self):
-        # with ?1000 on, the app swallows every mouse event (drag-select included),
-        # so the terminal's native selection + copy is dead. F12 drops the base mode:
-        # the terminal selects/copies natively (works inside tmux); F12 restores the
-        # in-app wheel scroll.
-        self.mouse = not self.mouse
-        try:
-            os.write(1, MOUSE_ON if self.mouse else MOUSE_OFF)
-        except OSError:
-            pass  # dead terminal (EPIPE): the main loop notices on the next read
-        self.tab_hint = ("mouse: on (wheel scroll)" if self.mouse
-                         else "mouse: off (select + copy, F12 to revert)")
-        self.dirty = True
     def feed(self, s):
         self.rx += s
         self.rx_time = time.time()
@@ -196,16 +161,6 @@ class KeyHandler:
                     return
                 self.ins(r[6:e].replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    "))
                 self.rx = r[e + 6:]
-            elif r.startswith("\x1b[<"):  # SGR mouse: the wheel scrolls the
-                m = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])", r)  # in-app history (same as
-                if not m:  # Up/Down); the alt screen has no terminal scrollback to
-                    return  # forward SU/Sd to the terminal (that only shifted the display)
-                btn, _, _, rel = m.groups()
-                self.rx = r[m.end():]
-                if rel == "M" and btn in ("64", "65"):  # wheel release: 3 lines per notch
-                    self.scroll += 3 if btn == "64" else -3
-                    self.scroll = max(0, self.scroll)  # clamped upper bound in draw()
-                    self.dirty = True
             elif len(r) == 1:
                 return
             elif r[1] in "[O":

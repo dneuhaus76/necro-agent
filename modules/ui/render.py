@@ -84,7 +84,13 @@ def sgr(base, st):
     s += _CODE * ("c" in st)
     s += _EDIT_OLD * ("o" in st)  # faded dark orange (edit - lines)
     s += _EDIT_NEW * ("g" in st)  # faded dark green (edit + lines)
+    s += (";" + fg("red")) * ("e" in st)  # error text overrides the block base color
     return s + "m"
+ERR_PREFIX = "error:"
+def is_err(text):
+    """True when a tool result / system message is an error (convention: it starts
+    with 'error:' - see core.agent.run_tool). Used to paint errors in red."""
+    return isinstance(text, str) and text.lstrip().lower().startswith(ERR_PREFIX)
 def emit(segs, base, pre=""):
     return pre + "".join(sgr(base, st) + t for t, st in segs if t) + "\x1b[0m"
 INL = re.compile(r"`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*")
@@ -147,31 +153,6 @@ def menu_line(items, sel, width):
     if off + n < len(items):
         segs.append(("›", ""))
     return emit(segs, DARK)
-def table(blk, width, base):
-    rows = [[c.strip() for c in r.strip().strip("|").split("|")] for r in blk]
-    rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r)]
-    if not rows:
-        return []
-    n = max(map(len, rows))
-    segs = [[inline(c) for c in r + [""] * (n - len(r))] for r in rows]
-    cwid = [max(1, max(sw("".join(t for t, _ in sc[j])) for sc in segs)) for j in range(n)]
-    while sum(cwid) + 3 * (n - 1) > width and max(cwid) > 3:
-        cwid[cwid.index(max(cwid))] -= 1
-    out = []
-    for ri, sc in enumerate(segs):
-        cells = [wrap_segs([(t, s + ("b" if ri == 0 else "")) for t, s in c], cwid[j])
-                 for j, c in enumerate(sc)]
-        for k in range(max(len(c) for c in cells)):
-            line = []
-            for j, c in enumerate(cells):
-                l = c[k] if k < len(c) else []
-                line += l + [(" " * (cwid[j] - sum(sw(t) for t, _ in l)), "")]
-                if j < n - 1:
-                    line.append((" │ ", ""))
-            out.append(emit(line, base))
-        if ri == 0 and len(segs) > 1:
-            out.append(emit([("─┼─".join("─" * w for w in cwid), "")], DARK))
-    return out
 def diff_view(src, old, new):
     """Numbered diff of one edit (old-file line numbers) for display and model context."""
     start = src[:src.index(old)].count("\n") + 1
@@ -187,12 +168,43 @@ def diff_view(src, old, new):
             out += [f"- {n + i:<5} {a[i]}" for i in range(i1, i2)]
             n += i2 - i1
         elif tag == "insert":
-            out += [f"+ {n:<5} {b[j]}" for j in range(j1, j2)]
-        else:  # replace: + lines carry the number of the replaced line
+            # new lines land at the anchor position: number them sequentially
+            out += [f"+ {n + (j - j1):<5} {b[j]}" for j in range(j1, j2)]
+        else:  # replace: + lines carry the number of the replaced line (sequential)
             out += [f"- {n + i:<5} {a[i]}" for i in range(i1, i2)]
-            out += [f"+ {n:<5} {b[j]}" for j in range(j1, j2)]
+            out += [f"+ {n + (j - j1):<5} {b[j]}" for j in range(j1, j2)]
             n += i2 - i1
     return "\n".join(out)
+def table_lines(rows, width, base):
+    """Render a Markdown table block: bold header, dash rule, padded data rows.
+    The separator row (|---|---|) is consumed, not displayed."""
+    def cells(ln):
+        s = ln.strip()
+        if s.startswith("|"):
+            s = s[1:]
+        if s.endswith("|"):
+            s = s[:-1]
+        return [c.strip() for c in s.split("|")]
+    parsed = [cells(ln) for ln in rows]
+    ncol = max(len(r) for r in parsed)
+    parsed = [r + [""] * (ncol - len(r)) for r in parsed]
+    is_sep = lambda r: any(c for c in r) and all(re.fullmatch(r":?-+:?", c) for c in r if c)
+    header = next((r for r in parsed if not is_sep(r)), [])
+    body = [r for i, r in enumerate(parsed) if r is not header and not is_sep(r)]
+    widths = [max(sw(r[c]) for r in [header] + body) for c in range(ncol)]
+    total = sum(widths) + 2 * (ncol - 1)
+    if total > width:  # shrink columns to fit the terminal
+        budget = max(width - 2 * (ncol - 1), ncol)
+        widths = [max(1, int(w * budget / max(total - 2 * (ncol - 1), 1))) for w in widths]
+    def fmt(r, style):
+        txt = "  ".join(fit(r[c], widths[c]).ljust(widths[c]) for c in range(ncol)).rstrip()
+        return emit([(txt, style)], base)
+    out = [fmt(header, "b")]
+    out.append(emit([("  ".join("─" * w for w in widths).rstrip(), "")], DARK))
+    out += [fmt(r, "") for r in body]
+    return out
+HEAD_EMOJI = {1: "\U0001F4CC ", 2: "\U0001F538 "}  # only top levels: a marker on every heading would be noise
+TASK = {" ": "\u2610", "x": "\u2611"}  # "- [ ]" / "- [x]" checkboxes; a checklist marker is a symbol, not emoji
 def md_lines(text, width, base):
     out, code, rows, i = [], False, text.split("\n"), 0
     while i < len(rows):
@@ -205,22 +217,30 @@ def md_lines(text, width, base):
         if code:
             for ch in chunks(ln, width - 2):
                 out.append(emit([("  " + ch + " " * (width - 2 - sw(ch)), "c")], base))
-        elif s.startswith("|"):
-            blk = [ln]
-            while i < len(rows) and rows[i].strip().startswith("|"):
-                blk.append(rows[i])
-                i += 1
-            out += table(blk, width, base)
         elif (m := re.match(r"\s{0,3}(#{1,6})\s+(.*)", ln)):
-            out += [emit(l, base) for l in wrap_segs(inline(m[2], "bu" if len(m[1]) < 3 else "b"), width)]
+            pre = HEAD_EMOJI.get(len(m[1]), "")  # keeps the level signal on continuation lines
+            for k, l in enumerate(wrap_segs(inline(m[2], "bu" if len(m[1]) < 3 else "b"), width - sw(pre))):
+                out.append(emit(l, base, pre if k == 0 else " " * sw(pre)))
         elif re.fullmatch(r"\s*([-*_])\1{2,}\s*", ln):
             out.append(emit([("─" * width, "")], DARK))
         elif (m := re.match(r"(\s*)([-*+]|\d+[.)])\s+(.*)", ln)):
-            pre = " " * len(m[1]) + ("•" if m[2] in "-*+" else m[2]) + " "
-            for k, l in enumerate(wrap_segs(inline(m[3]), width - sw(pre))):
+            mark, body = None, m[3]
+            if (t := re.match(r"\[([ xX])\]\s+(.*)", body) if m[2] in "-*+" else None):
+                mark, body = TASK[t[1].lower()], t[2]  # task list: checkbox replaces the bullet
+            pre = " " * len(m[1]) + (mark or ("•" if m[2] in "-*+" else m[2])) + " "
+            for k, l in enumerate(wrap_segs(inline(body), width - sw(pre))):
                 out.append(emit(l, base, pre if k == 0 else " " * sw(pre)))
         elif (m := re.match(r">\s?(.*)", ln)):
             out += [emit(l, base, "│ ") for l in wrap_segs(inline(m[1], "i"), width - 2)]
+        elif s.startswith("|") and "|" in s[1:]:
+            j = i  # collect the consecutive table block (current line is rows[i-1])
+            while j < len(rows) and rows[j].strip().startswith("|") and "|" in rows[j].strip()[1:]:
+                j += 1
+            if j - i + 1 >= 2:
+                out += table_lines(rows[i - 1:j], width, base)
+                i = j  # next loop top: ln = rows[j], i becomes j+1
+                continue
+            out += [emit(l, base) for l in wrap_segs(inline(s), width)]
         elif not s:
             if out and out[-1] != "":
                 out.append("")

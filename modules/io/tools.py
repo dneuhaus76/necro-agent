@@ -15,6 +15,8 @@ BASH_TIMEOUT = 120  # s, wall-time cap of the bash tool (SSOT: run_bash default,
 TOOL_OUT_CAP = 8000  # max chars of tool output sent to the model (bash + grep)
 CONTENT_CAP = 20000  # max chars of file/context content sent to the model (SSOT: read_file,
                      # tool-result truncation in agent._run_one, MD context load in necro.py)
+GREP_MAX_COUNT = 100  # max matches per file for the grep tool (SSOT: run_grep, tool description)
+GREP_TIMEOUT = 30  # s, wall-time cap of the grep tool (was a hard-coded 30 in subprocess.run)
 def cap_text(o, cap=TOOL_OUT_CAP):
     """Cut tool output to cap chars with a truncation marker (SSOT for bash + grep)."""
     return o[:cap] + "\n…[truncated]" if len(o) > cap else o
@@ -70,32 +72,94 @@ def run_bash(command, stop, on_line=None, timeout=BASH_TIMEOUT):
         pt.join()
     p.wait()
     return "".join(out_lines), p.returncode, timed_out, stop.is_set()
-def run_grep(pattern, path="."):
-    """rg (fallback grep -rnE), 30 s timeout, TOOL_OUT_CAP cap."""
-    cmd = ["rg", "-n", "--max-count", "100", "--", pattern, path or "."]
+def stop_hit(stop):
+    """Was an abort requested? stop is optional (None = no abort channel)."""
+    return stop is not None and stop.is_set()
+
+def wait_slices(p, stop, timeout):
+    """Wait for p while polling stop in short slices (the run_bash pattern), so an
+    abort returns at once instead of blocking until the wall-time cap. Returns
+    'done' | 'timeout' | 'aborted'; the caller kills the process group."""
+    t0 = time.monotonic()
+    while p.poll() is None:
+        if stop_hit(stop):
+            return "aborted"
+        if time.monotonic() - t0 >= timeout:
+            return "timeout"
+        time.sleep(0.02)
+    return "done"
+
+def kill_group(p):
+    """Kill the child's whole process group (start_new_session=True) - a shell
+    wrapper would otherwise survive its children and keep the pipe open."""
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            p.kill()
+        except OSError:
+            pass  # already dead
+
+def run_grep(pattern, path=".", stop=None):
+    """rg (fallback grep -rnE), 30 s timeout, TOOL_OUT_CAP cap. The wait polls stop
+    in short slices (wait_slices), so an abort does not hang until GREP_TIMEOUT."""
+    if not pattern:  # guard: an empty pattern matches every line of every file
+        return "error: grep: missing 'pattern'"
+    cmd = ["rg", "-n", "--max-count", str(GREP_MAX_COUNT), "--", pattern, path or "."]
     if not shutil.which("rg"):  # fallback for systems without ripgrep
         cmd = ["grep", "-rnE", "--", pattern, path or "."]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=30, errors="replace")
-    o = cap_text(p.stdout.strip())
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True, errors="replace",
+                         start_new_session=True)
+    out = []
+    def pump():
+        try:
+            out.extend(p.stdout)
+        except (ValueError, OSError):
+            pass  # pipe closed early (killed on abort)
+    pt = threading.Thread(target=pump, daemon=True)
+    pt.start()
+    state = wait_slices(p, stop, GREP_TIMEOUT)
+    if state != "done":
+        kill_group(p)
+        p.stdout.close()  # unblock the pump
+    pt.join(1)  # bounded: a stuck reader must not hang the tool past the abort
+    p.wait()
+    o = cap_text("".join(out).strip())
+    if state == "aborted":
+        return f"{o}\n[aborted]".strip() if o else "[aborted]"
+    if state == "timeout":
+        return f"{o}\n[timeout after {GREP_TIMEOUT} s]".strip() if o else f"[timeout after {GREP_TIMEOUT} s]"
     return o or f"no matches (exit {p.returncode})"
-def read_file(path, offset=1, limit=0):
+def read_file(path, offset=1, limit=0, stop=None):
     """Read a file with 1-based offset/limit; 20k-char cap with a continuation
     marker. the fast path (offset=1, no limit) cuts at a line boundary so the
-    continuation offset points to the NEXT full line, not into a partial one."""
+    continuation offset points to the NEXT full line, not into a partial one.
+    The read itself is capped, so a stop check at entry is enough (a chunked
+    reader would be a rewrite without a latency win)."""
+    if stop_hit(stop):
+        return "[aborted]"
     p = Path(path).expanduser()
     off, lim = max(1, int(offset or 1)), max(0, int(limit or 0))
     if off == 1 and not lim:  # fast path: only the first CONTENT_CAP chars are shown anyway,
         with p.open(errors="replace") as f:  # so a huge file (log dump, venv)
             t = f.read(CONTENT_CAP)  # is not fully loaded into memory
         if len(t) >= CONTENT_CAP:
-            i = t.rfind("\n")
-            if i > 0:
-                t, nxt = t[:i], t[:i].count("\n") + 2  # next FULL line after the cut
-            else:
-                nxt = 1  # no complete line in the first CONTENT_CAP chars
-            t += f"\n…[truncated, {p.stat().st_size} bytes total - continue with offset {nxt}]"
+            # only a file with MORE content than the cap is truncated: a file of
+            # exactly CONTENT_CAP chars would be reported truncated with
+            # 'continue with offset 1' - an endless re-read of the same content
+            total = p.stat().st_size
+            if total > len(t):
+                i = t.rfind("\n")
+                if i > 0:
+                    t, nxt = t[:i], t[:i].count("\n") + 2  # next FULL line after the cut
+                else:
+                    nxt = 1  # no complete line in the first CONTENT_CAP chars
+                t += f"\n…[truncated, {total} bytes total - continue with offset {nxt}]"
         return t
     t = p.read_text(errors="replace")
+    if stop_hit(stop):  # a large file may take a moment - the turn was aborted meanwhile
+        return "[aborted]"
     lines = t.split("\n")
     if off > len(lines):
         return f"error: offset {off} beyond EOF ({len(lines)} lines)"
@@ -124,7 +188,9 @@ def _atomic_write(p, text):
         except OSError:
             pass
         raise
-def write_file(path, content):
+def write_file(path, content, stop=None):
+    if stop_hit(stop):
+        return "[aborted]"
     p = Path(path).expanduser()
     cur = p.parent  # a file component in the path (e.g. 'modules/necro.py/x') would become a dir via mkdir
     while cur != cur.parent:

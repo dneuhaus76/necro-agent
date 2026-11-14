@@ -47,6 +47,7 @@ File writes (`write_file`/`edit_file`) are serialized across PROCESSES via
 because `os.replace` swaps the data file's inode. Locks release on FD close
 (also on crash) – no stale-lock problem. Works across the bind mounts here
 (same underlying volume); not portable to NFSv3 without flock support.
+(See tools.md for the atomic write + edit critical section.)
 
 ## 7-Day Pruning
 

@@ -7,10 +7,6 @@ plus two modules: `modules/ui/keys.py` (input handling, mixin) and
 ## Terminal Setup
 
 - **Alternate screen** (`?1049h`), **raw mode**, **bracketed paste** (`?2004h`).
-- **SGR mouse** (`?1000h` + `?1006h`) – the wheel scrolls the in-app content
-  area instead of the terminal/tmux scrollback. F12 toggles mouse mode off
-  for terminal-native select/copy (with `?1000` on, the app swallows every
-  mouse event, drag-select included).
 - **Cursor shape**: steady underline (`DECSCUSR`, `\x1b[4 q`) instead of the
   default block; restored on exit.
 - Input is decoded incrementally (UTF-8, `replace`); a pending lone ESC is
@@ -83,20 +79,19 @@ selection and scrollback survive.
 
 - `self.scroll` = lines anchored above the viewport; new lines keep the view
   anchored (`scroll += tot - last_tot`), clamped to `[0, tot - ch]`.
-- Wheel / PgUp / PgDn / arrow keys (when no history entry is loaded) adjust
-  it. One page = the visible content area.
+- PgUp / PgDn adjust it. One page = the visible content area.
 
 ## Input Handling (modules/ui/keys.py)
 
-- **Key dispatch** (`key()`): control keys (`^a/^e/^w/^k/^u/^c/^d`), toggles
-  (`^t` thinking, `^o` tools, `^x` edits), F12 mouse, ESC abort/close menu.
+- **Key dispatch** (`key()`): control keys (`^c` clear/abort, `^d` quit),
+  toggles (`^t` thinking, `^o` tools, `^x` edits), ESC abort/close menu.
 - **TAB completion** (`tab_complete`): `/commands` (single slash) and file
   names; unique directory gets a trailing `/`; multiple candidates -> popup
   menu + cycling (longest common prefix first).
 - **History navigation** (Up/Down): terminal-like; a user-typed line blocks
   the walk, a loaded entry can be walked further.
-- **CSI parsing** in `feed()`: bracketed paste, SGR mouse wheel, arrows,
-  Home/End, PgUp/PgDn, F-keys, Alt+Enter (newline).
+- **CSI parsing** in `feed()`: bracketed paste, arrows, Home/End, PgUp/PgDn,
+  F-keys, Alt+Enter (newline).
 
 ## Palette (modules/core/palette.py)
 
@@ -110,9 +105,8 @@ reflect the overrides. Roles are validated against `ROLES` in
 ## Key Reference (shown by `/help`)
 
 ```
-^t thinking · ^o tools · ^x edits · F12 mouse (wheel / select+copy)
-↑/↓ history · PgUp/PgDn/wheel scroll · Alt+Enter newline
-^a/^e line start/end · ^w word back · ^k cut to end · ^u cut to start
+^t thinking · ^o tools · ^x edits
+↑/↓ history · PgUp/PgDn scroll · Alt+Enter newline
 TAB complete (/commands) · Esc abort / close menu · ^c clear (idle) / abort (busy)
 /help · /model [name] · /cd <dir> · /clear|/new · /review /test /plan · /quit
 ```

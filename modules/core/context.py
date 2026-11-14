@@ -43,14 +43,16 @@ def tool_stats(results):
     size (proxy for the context/token cost of tool output)."""
     fails = sum(1 for r in results if r.lstrip().startswith("error:"))
     return fails, sum(len(r) for r in results)
-def delegate_stats(items, fallbacks=0, subagent_steps=0):
-    """delegation metrics for the turn trace: {calls, ms, fallbacks, subagent_steps}.
-    items = (name, result, ms) triples; calls = delegate/consult calls. fallbacks =
-    takeovers (swarm agent died, main agent took over - the quality signal);
-    subagent_steps = total sub-agent loop steps (work volume)."""
+def delegate_stats(items, fallbacks=0, subagent_steps=0, sub_delegates=0):
+    """delegation metrics for the turn trace: {calls, ms, fallbacks, subagent_steps,
+    sub_delegates}. items = (name, result, ms) triples; calls = delegate/consult calls.
+    fallbacks = takeovers (swarm agent died, main agent took over - the quality signal);
+    subagent_steps = total sub-agent loop steps (work volume); sub_delegates = nested
+    delegate calls inside sub-agents (N236, cost visibility)."""
     d = [i for i in items if i[0] in ("delegate", "consult")]
     return {"calls": len(d), "ms": sum(ms for _, _, ms in d),
-            "fallbacks": fallbacks, "subagent_steps": subagent_steps}
+            "fallbacks": fallbacks, "subagent_steps": subagent_steps,
+            "sub_delegates": sub_delegates}
 def tool_detail(items):
     """per-tool breakdown of a turn: {name: {calls, fails, chars, ms}}.
     items = (name, result, ms) triples; same 'error:' convention as tool_stats().

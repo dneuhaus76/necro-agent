@@ -5,6 +5,8 @@ import json
 import re
 import time
 from urllib.parse import urlparse
+
+from modules.core import inference
 def _conn(base, timeout, token=None):
     u = urlparse(base)
     cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
@@ -34,6 +36,15 @@ def fetch_model_info(base, model, ctx_fallback, token=None):
             c.close()  # exception path (bad JSON, partial response) must not leak the socket (F3)
         for m in data.get("data") or []:
             if m.get("id") != model:
+                continue
+            if "context_window" in m:  # hosted API (e.g. DeepSeek): flat fields, no server args
+                info["status"] = m.get("name") or ""
+                if isinstance(m.get("context_window"), int):
+                    info["ctx"] = m["context_window"]
+                if e := (m.get("effort") or {}).get("default_level"):
+                    info["effort"] = e
+                info["arch"] = _arch_text({"input_modalities": m.get("input_modalities"),
+                                           "output_modalities": m.get("output_modalities")})
                 continue
             args = (m.get("status") or {}).get("args") or []
             def g(flag):  # value of a --flag in the server args, '' if absent or dangling
@@ -67,13 +78,16 @@ def fetch_model_info(base, model, ctx_fallback, token=None):
         pass
     return info
 def detect_thinking(base, model, token=None):
-    """Probe whether the model emits reasoning when thinking is requested (one retry)."""
+    """Probe whether the model emits reasoning when thinking is requested (one retry).
+    Providers that reject the 'thinking' field (Google) are probed without it -
+    the probe then just reports no reasoning output."""
+    tv = inference.thinking_value(base, True)
     for _ in range(2):
         try:
-            c, u = _conn(base, 30)
+            c, u, _ = _conn(base, 30, token)
             try:
                 c.request("POST", u.path.rstrip("/") + "/chat/completions",
-                          json.dumps({"model": model, "thinking": True, "max_tokens": 16,
+                          json.dumps({"model": model, **({} if tv is None else {"thinking": tv}), "max_tokens": 16,
                                       "messages": [{"role": "user", "content": "Say: OK"}]}),
                           _hdrs(token))
                 msg = json.loads(c.getresponse().read())["choices"][0]["message"]
@@ -108,7 +122,7 @@ def resolve(cfg_think, base, model, ctx_fallback, on_done, token=None):
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(2) as ex:
         f_info = ex.submit(fetch_model_info, base, model, ctx_fallback, token)
-        f_think = None if isinstance(cfg_think, bool) else ex.submit(detect_thinking, base, model, token)
+        f_think = None if isinstance(cfg_think, bool) else ex.submit(detect_thinking, base, model, token)  # noqa
         info = f_info.result()
         think = f_think.result() if f_think else None
     on_done(info, think)

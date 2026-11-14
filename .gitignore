@@ -6,8 +6,8 @@
 !_docs/
 _docs/*.lock
 !modules/
+# !test/  # DEAKTIVIERT: test/ wird NICHT gepushed
 !emblem
-!NECRO.md
 !.gitignore
 **/__pycache__/
 *.pyc
