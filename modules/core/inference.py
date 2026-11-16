@@ -3,6 +3,7 @@ Pure functions of (base, body) - no App state; the caller passes the connection
 list so abort() can close in-flight requests (main stream + swarm sub-requests)."""
 import http.client, json, os
 from urllib.parse import urlparse
+from modules.core import providers
 class HTTPError(RuntimeError):
     """Non-200 response. status: the HTTP status code (4xx = definitive
     rejection -> non-retryable; 5xx = transient server fault -> retryable,
@@ -60,18 +61,58 @@ def open_conn(base, body, conns=None, timeout=300, token=None):
             pass
         raise
     return conn, r
-def thinking_value(base, on):
-    """Provider-specific 'thinking' request field. llama.cpp takes a bool;
-    DeepSeek (api.deepseek.com) requires a struct: {"type": "enabled"|"disabled"}.
-    Anything else (OpenAI-compatible servers) keeps the plain bool. Google
-    (generativelanguage.googleapis.com) rejects the unknown field with HTTP 400
-    -> None, so the caller omits it entirely."""
-    h = urlparse(base).hostname or ""
-    if "googleapis.com" in h:
-        return None
-    if "deepseek.com" in h:
-        return {"type": "enabled" if on else "disabled"}
-    return bool(on)
+def thinking_value(base, on, overrides=None):
+    """Provider-specific 'thinking' request field - see core.providers (llama.cpp
+    takes a bool, DeepSeek a struct, Google rejects the field -> None = omit)."""
+    return providers.thinking_field(providers.resolve(base, overrides), on)
+def call_extra(tc):
+    """Provider payload of one tool call that must be echoed back verbatim.
+    Google's OpenAI-compatible endpoint returns the thought signature as
+    extra_content.google.thought_signature; a replayed function call without it
+    is rejected with HTTP 400 'Function call is missing a thought_signature'
+    (Gemini 3, required for tools). Some servers put the signature directly on
+    the call instead -> that is normalised into the same shape. {} = nothing."""
+    out = {}
+    ex = tc.get("extra_content")
+    if isinstance(ex, dict) and ex:
+        out["extra_content"] = json.loads(json.dumps(ex))  # detached copy
+    sig = tc.get("thought_signature")
+    if not sig:
+        fn = tc.get("function")
+        sig = fn.get("thought_signature") if isinstance(fn, dict) else None
+    if isinstance(sig, str) and sig:
+        out.setdefault("extra_content", {}).setdefault("google", {})["thought_signature"] = sig
+    return out
+
+
+def merge_extra(dst, src):
+    """Merge a call_extra() dict into an accumulator (streaming: the payload can
+    arrive in any chunk of the same tool call). Recursive, so an empty sub-dict in
+    a later chunk never wipes an already captured signature."""
+    for k, v in (src or {}).items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            merge_extra(dst[k], v)
+        else:
+            dst[k] = v
+    return dst
+
+
+def assistant_msg(text, calls):
+    """Assistant message of a tool-call step. calls: [{id, name, args, extra}] -
+    'extra' (call_extra of the served response) goes back to the provider
+    unchanged; without it Google rejects the next request (thought signature).
+    Provider-neutral: for local servers 'extra' is empty and nothing is added."""
+    m = {"role": "assistant", "content": text or None}
+    if calls:
+        m["tool_calls"] = []
+        for c in calls:
+            tc = {"id": c.get("id") or "", "type": "function",
+                  "function": {"name": c.get("name") or "", "arguments": c.get("args") or "{}"}}
+            tc.update(c.get("extra") or {})
+            m["tool_calls"].append(tc)
+    return m
+
+
 def sse_events(resp):
     """Yield the parsed JSON objects of an OpenAI-compatible SSE stream (skips
     comment/keep-alive lines, [DONE] and malformed chunks)."""

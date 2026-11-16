@@ -38,7 +38,8 @@ against a comma-separated allow-list before starting a turn:
 - Source (first match wins):
   1. env `NECRO_TELEGRAM_CHATS`
   2. config key `telegram_chats` (`necro.cfg`)
-- **Empty allow-list = everyone** (open mode, e.g. for local testing).
+- **Empty allow-list = nobody** (deny-all). A bot without a whitelist
+  answers no one.
 - Unknown chat → the bot replies "(unknown chat \<id\> - not in the whitelist)"
   and does **not** start a turn (no tokens spent).
 
@@ -47,6 +48,8 @@ The allow-list is also the recipient list for the start-up greeting.
 **Trade-off.** The whitelist is a flat id list, not a per-chat permission set.
 All whitelisted chats get the same full agent access. Fine for a personal
 bot; for multi-user setups a per-chat role model would be the next step.
+The deny-all default is safe: a misconfigured bot (no `telegram_chats`)
+cannot be abused until the owner adds a chat id.
 
 ## 3. Atomic File Writes (Crash Safety)
 

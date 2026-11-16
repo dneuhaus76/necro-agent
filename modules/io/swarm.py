@@ -82,6 +82,17 @@ def _probe(url, token):
         c.getresponse().read()
     finally:
         c.close()  # exception path (bad JSON, partial response) must not leak the socket (F3)
+def port_open(url, timeout=3):
+    """Live TCP port check (ping may be blocked, a TCP connect is not).
+    Used as a pre-flight in delegate/consult before a request is fired."""
+    import socket
+    u = urlparse(url)
+    try:
+        with socket.create_connection((u.hostname, u.port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
 def check_once(swarm, auth=None):
     """One availability pass: {(url, model): bool}. keyed by url+model, not the
     model name alone - duplicate names on different hosts must not share one status.

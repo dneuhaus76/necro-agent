@@ -40,9 +40,11 @@ hiccup must not flip the status for the whole cycle). `on_change` fires only
 when a status actually flips — the header shows on/off per agent, so an
 offline swarm is visible before a delegate call fails.
 
-`_tool_delegate`/`_tool_consult` do a pre-flight check against this map: an
-agent marked offline fails fast with a precise error instead of burning a
-request on a dead host.
+`_tool_delegate`/`_tool_consult` do a pre-flight check (`_swarm_precheck`):
+a fresh `up` from the background check is trusted. Otherwise a **live TCP
+port check** (`swarm.port_open`, 3 s) runs — ping may be blocked, a TCP
+connect is not. Only when both fail does the call abort with a precise
+error instead of burning a request on a dead host.
 
 ## delegate
 

@@ -15,11 +15,15 @@ KNOWN = {
     "show_edits": bool,
     "max_steps": int,   # int or numeric string (int() is applied at startup)
     "ctx_window": int,  # fallback context window (real size from the inference server)
+    "ctx_models": dict,  # per-model context cap {model: tokens} - wins over the server window
     "peer_host": str,
     "peer_port": int,   # int or numeric string
     "peer_turn_timeout": int,  # max wall time of a peer turn in seconds
     "peer_max_hops": int,  # max peer hops in one chain (1 = no multi-hop)
     "peer_turn_subagents": bool,  # delegate/consult inside peer turns
+    "subagent_delegate": bool,  # delegate inside sub-agents (recursion toggle)
+    "subagent_max_depth": int,  # max nesting depth of a delegate chain
+    "max_output_tokens": int,  # output-token cap when reasoning is off (0 = off)
     "step_timeout": int,  # per-step socket timeout in seconds
     "turn_timeout": int,  # wall-clock timeout per turn in seconds
     "max_turns": int,     # max turns per session, self-loop guard
@@ -30,6 +34,7 @@ KNOWN = {
     "colors": dict,  # role -> 0-255 (roles from core.palette.ROLES)
     "tool_emoji": dict,  # tool -> emoji string (unknown tools fall back to ▸)
     "auth": dict,  # optional per-server access tokens {url or host:port: token}
+    "providers": dict,  # optional provider overrides {base url or hostname: openai|google|deepseek}
 }
 def _ok(v, t):
     if t is bool:
@@ -78,4 +83,11 @@ def validate(cfg):
                 issues.append(f"colors['{role}'] unknown role (valid: {', '.join(sorted(ROLES))})")
             elif not (isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx <= 255):
                 issues.append(f"colors['{role}'] expects int 0-255, got {type(idx).__name__}")
+    ctxm = cfg.get("ctx_models")
+    if isinstance(ctxm, dict):
+        for name, v in ctxm.items():
+            if name.startswith("_"):  # _doc/_note keys carry comments, not values
+                continue
+            if not _ok(v, int) or int(v) <= 0:
+                issues.append(f"ctx_models['{name}'] expects a positive int (tokens), got {v!r}")
     return issues

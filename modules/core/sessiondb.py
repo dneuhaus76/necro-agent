@@ -1,6 +1,18 @@
 """NECRO turns DB: one row per session, parallel-safe (busy_timeout), own turns only."""
 import json, sqlite3, threading, time
 from pathlib import Path
+
+# Required schema objects for the fast open path (SSOT: the count below is
+# derived from this tuple, so adding an entry cannot desync the check from the
+# CREATE statements - the old hard-coded 'have < 7' broke silently).
+_SCHEMA = (
+    ("table", "sessions"), ("table", "turns"), ("table", "traces"),
+    ("table", "turns_fts"),  # FTS5 index for recall()
+    ("trigger", "turns_ai"), ("trigger", "turns_ad"),  # keep the index in sync
+    ("column", "session"),  # column of turns; pre-session DBs lack it -> migration
+)
+PRUNE_DAYS = 7  # retention horizon of turns/traces (= recall() reach)
+WAL_LIMIT = 4 * 1024 * 1024  # max WAL file size in bytes (checkpoint truncates above it)
 class SessionDB:
     """Own-session mirror of the agent context (all messages except system) in SQLite.
     Sessions older than 7 days are pruned at open.
@@ -10,28 +22,26 @@ class SessionDB:
     def __init__(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = Path(path)
+        self.closed = False  # daemon threads may still reach the DB during shutdown
         self._lock = threading.Lock()  # sqlite3 connections are not thread-safe for concurrent use
         # autocommit (isolation_level=None) + explicit 'with' transactions
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA busy_timeout = 5000")
         self.db.execute("PRAGMA journal_mode = WAL")  # parallel readers + lock-free open (2nd instance no longer 'database is locked')
+        # a long-running instance never shrinks the WAL on its own (it was 8.9 MB
+        # against a 49 MB DB): cap the file, the data stays safe either way
+        self.db.execute(f"PRAGMA journal_size_limit = {WAL_LIMIT}")
         with self._lock:
             self.db.execute("BEGIN IMMEDIATE")
             try:
-                # fast path - one query checks the whole schema (4 tables + 2 FTS
-                # triggers); a complete schema skips the ~14 IF NOT EXISTS executes
-                # (~2.5 ms per open, measured). Migration edge cases stay on the slow path.
-                have = self.db.execute(
-                    "SELECT (SELECT count(*) FROM sqlite_master WHERE type = 'table'"
-                    " AND name IN ('sessions', 'turns', 'traces', 'turns_fts'))"
-                    " + (SELECT count(*) FROM sqlite_master WHERE type = 'trigger'"
-                    " AND name IN ('turns_ai', 'turns_ad'))"
-                    " + (SELECT count(*) FROM pragma_table_info('turns') WHERE name = 'session')").fetchone()[0]
-                if have < 7:
+                # fast path - one query checks the whole schema (see _SCHEMA); a
+                # complete schema skips the ~14 IF NOT EXISTS executes (~2.5 ms per
+                # open, measured). Migration edge cases stay on the slow path.
+                if self._schema_count() < len(_SCHEMA):
                     self.db.execute("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, ts TEXT NOT NULL)")
                     if [r[1] for r in self.db.execute("PRAGMA table_info(turns)")] and \
                        "session" not in [r[1] for r in self.db.execute("PRAGMA table_info(turns)")]:
-                        self.db.execute("DROP TABLE turns")  # migrate pre-session schema
+                        self._archive_legacy_turns()  # pre-session schema: keep the rows
                     self.db.execute("CREATE TABLE IF NOT EXISTS turns (id INTEGER PRIMARY KEY, session INTEGER NOT NULL, "
                                     "ts TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_calls TEXT, tool_call_id TEXT, "
                                     "compacted INTEGER NOT NULL DEFAULT 0)")
@@ -48,16 +58,81 @@ class SessionDB:
                                     "INSERT INTO turns_fts(turns_fts, rowid, content) VALUES ('delete', old.id, old.content); END")
                     if not had_fts:
                         self.db.execute("INSERT INTO turns_fts(turns_fts) VALUES ('rebuild')")  # index existing rows
-                old = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 7 * 86400))
-                self.db.execute("DELETE FROM turns WHERE session IN (SELECT id FROM sessions WHERE ts < ?)", (old,))
-                self.db.execute("DELETE FROM sessions WHERE ts < ?", (old,))
-                self.db.execute("DELETE FROM traces WHERE ts < ?", (old,))
+                self._prune_locked()
                 self.db.execute("COMMIT")
             except Exception:
                 self.db.execute("ROLLBACK")
                 raise
         self.session_id = self.db.execute("INSERT INTO sessions (ts) VALUES (?)",
                                           (time.strftime("%Y-%m-%dT%H:%M:%S"),)).lastrowid
+
+    # ---- schema / lifecycle
+    def _schema_count(self):
+        """How many of the _SCHEMA objects exist (== len(_SCHEMA) means complete)."""
+        parts, args = [], []
+        for kind, name in _SCHEMA:
+            if kind == "column":
+                parts.append("(SELECT count(*) FROM pragma_table_info('turns') WHERE name = ?)")
+            else:
+                parts.append("(SELECT count(*) FROM sqlite_master WHERE type = ? AND name = ?)")
+                args.append(kind)
+            args.append(name)
+        return self.db.execute("SELECT " + " + ".join(parts), args).fetchone()[0]
+
+    def _archive_legacy_turns(self):
+        """Pre-session schema: the rows carry no session id and cannot be
+        reconciled - but dropping them lost real history (the old code did a bare
+        DROP TABLE turns). Rename instead: the rows stay readable, the new turns
+        table starts empty. The FTS triggers must go with it, otherwise the same
+        trigger names would shadow the new ones and the index would stay empty."""
+        n, base = 0, time.strftime("turns_legacy_%Y%m%d", time.localtime())
+        while self._exists("table", f"{base}{'' if n == 0 else '_' + str(n)}"):
+            n += 1
+        legacy = f"{base}{'' if n == 0 else '_' + str(n)}"
+        self.db.execute(f"ALTER TABLE turns RENAME TO {legacy}")
+        for (name,) in self.db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?", (legacy,)).fetchall():
+            self.db.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+    def _exists(self, kind, name):
+        return bool(self.db.execute("SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?",
+                                    (kind, name)).fetchone())
+
+    def _prune_locked(self):
+        """Drop turns/traces older than PRUNE_DAYS (caller holds the transaction)."""
+        old = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - PRUNE_DAYS * 86400))
+        self.db.execute("DELETE FROM turns WHERE session IN (SELECT id FROM sessions WHERE ts < ?)", (old,))
+        self.db.execute("DELETE FROM sessions WHERE ts < ?", (old,))
+        self.db.execute("DELETE FROM traces WHERE ts < ?", (old,))
+
+    def prune(self):
+        """Retention pass for long runners (the open-time prune never runs again
+        otherwise). Cheap when nothing is old: the three DELETEs are index scans."""
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                self._prune_locked()
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+
+    def close(self):
+        """Release the connection (checkpoints the WAL). Idempotent, and safe to
+        call from a signal/finally path: a failing close must not mask the exit."""
+        with self._lock:
+            self.closed = True
+            try:
+                self.db.close()
+            except sqlite3.Error:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
     def recall(self, query, limit=10):
         """keyword search over PAST sessions (FTS5, last 7 days - the pruning
         horizon). OR semantics (any term hits, ranked by bm25) + prefix matching

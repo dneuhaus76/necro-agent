@@ -1,12 +1,13 @@
 """Telegram client for NECRO (long polling, stdlib only)."""
-import http.client, json, mimetypes, os, re, tempfile, threading, time
+import http.client, json, mimetypes, os, re, tempfile, threading, time, urllib.request
+TG_INBOX = "/tmp/necro-tg"  # incoming files land here (world-readable tmp, per-instance subdir optional)
 class TelegramBot:
     """Long-polling Telegram client (pi-telegram-plus-style): incoming text messages
     become agent turns, the final agent reply is sent back. Stdlib only."""
     def __init__(self, token, fmt="markdown", whitelist=(), rich="auto"):
         # fmt = 'markdown' (default, MarkdownV2) | 'html' | 'text'
         # whitelist = chat ids that may spend tokens; messages from other chats
-        # go to stranger_q instead of the prompt queue. Empty = everyone.
+        # go to stranger_q instead of the prompt queue. Empty = nobody (deny-all).
         # rich = 'auto' (default) | 'off': auto-detect markdown tables and route
         # them through sendRichMessage (Bot API 10.1); off for old clients.
         self.token, self.seen, self.seen_order, self.q, self.fmt = token, set(), [], [], fmt
@@ -39,7 +40,9 @@ class TelegramBot:
         """One getUpdates entry -> prompt queue (whitelisted) or stranger queue."""
         msg = u.get("message") or {}
         m = msg.get("text")
-        if not m or u["update_id"] in self.seen:
+        # media-only messages (no caption) must not be dropped by the text guard
+        has_media = bool(msg.get("document") or msg.get("photo"))
+        if not m and not has_media or u["update_id"] in self.seen:
             return
         self.seen.add(u["update_id"])
         self.seen_order.append(u["update_id"])
@@ -48,9 +51,19 @@ class TelegramBot:
         chat_id = msg.get("chat", {}).get("id")
         frm = msg.get("from") or {}  # Bot API field is 'from' (a Python keyword, hence frm)
         sender = frm.get("username") or frm.get("first_name") or ""
-        if self.whitelist and str(chat_id) not in self.whitelist:
+        if str(chat_id) not in self.whitelist:  # empty whitelist = nobody (deny-all)
             self.stranger_q.append((chat_id, sender))
-        else:
+            return
+        # incoming media: download to TG_INBOX, then route as a text prompt
+        # carrying the local path (the agent reads it with its file tools)
+        doc = msg.get("document")
+        if doc is None and (ph := msg.get("photo")):  # photos arrive as a list of sizes
+            doc = ph[-1]  # largest size
+        if doc is not None:
+            path = self.download(doc.get("file_id"), doc.get("file_name") or "file")
+            if path:
+                m = f"[telegram file] {path}" + (f" - {m.strip()}" if m else "")
+        if m:
             self.q.append((m.strip(), chat_id, sender))
     def stranger(self):
         """Pop one (chat_id, sender) from the stranger queue, or None."""
@@ -139,6 +152,18 @@ class TelegramBot:
                 self._api("sendMessage", chat_id=chat_id, text=chunk)
     def typing(self, chat_id):
         self._api("sendChatAction", chat_id=chat_id, action="typing")
+    def set_my_commands(self, commands):
+        """Push the bot's command menu to Telegram (setMyCommands). `commands` is a
+        list of (name, description) tuples; Telegram shows them in the client's
+        '/' menu. Returns True on success."""
+        r = self._api("setMyCommands", commands=[
+            {"command": name, "description": desc[:25]}  # Bot API hard limit: 25 chars
+            for name, desc in commands])
+        return bool(r.get("ok"))
+    def clear_my_commands(self):
+        """Remove all bot commands from the Telegram client menu (empty list)."""
+        r = self._api("setMyCommands", commands=[])
+        return bool(r.get("ok"))
     # --- rich messages (Bot API 10.1) + document upload -----------------
     # RichText (verified live against the real bot, 2026-11): a String (plain),
     # an Array of RichText, or a typed object {'type': bold|italic|code|..., 'text': ...}.
@@ -285,5 +310,22 @@ class TelegramBot:
             return self.send_file(chat_id, tmp)
         finally:
             os.unlink(tmp)
+    def download(self, file_id, name="file"):
+        """getFile + fetch to TG_INBOX; returns the local path, None on failure.
+        The filename is untrusted input: basename only, no path components."""
+        try:
+            r = self._api("getFile", file_id=file_id)
+            fp = (r.get("result") or {}).get("file_path")
+            if not fp:
+                return None
+            os.makedirs(TG_INBOX, exist_ok=True)
+            safe = os.path.basename(name).replace("/", "_")
+            dest = os.path.join(TG_INBOX, f"{int(time.time())}_{safe}")
+            url = f"https://api.telegram.org/file/bot{self.token}/{fp}"
+            with urllib.request.urlopen(url, timeout=60) as resp, open(dest, "wb") as f:
+                f.write(resp.read())
+            return dest
+        except Exception:
+            return None  # network hiccup / >20 MB file: drop, do not crash the poll loop
     def next(self):
         return self.q.pop(0) if self.q else None

@@ -6,7 +6,7 @@
 !_docs/
 _docs/*.lock
 !modules/
-# !test/  # DEAKTIVIERT: test/ wird NICHT gepushed
+!test/
 !emblem
 !.gitignore
 **/__pycache__/

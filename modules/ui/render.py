@@ -175,9 +175,45 @@ def diff_view(src, old, new):
             out += [f"+ {n + (j - j1):<5} {b[j]}" for j in range(j1, j2)]
             n += i2 - i1
     return "\n".join(out)
+def cut_segs(segs, w):
+    """Trim styled segments to w columns. When text is lost, the last visible
+    column becomes an ellipsis so a cut cell is visibly cut, not silently wrong."""
+    out, n, lost = [], 0, False
+    for t, st in segs:
+        room = w - n
+        if room <= 0:
+            lost = True
+            break
+        if sw(t) <= room:
+            out.append((t, st))
+            n += sw(t)
+            continue
+        piece = fit(t, room)
+        if piece:
+            out.append((piece, st))
+            n += sw(piece)
+        lost = True
+        break
+    if not lost:
+        return out
+    # replace the last column with '…' (keeps the column budget intact)
+    while out and sw("".join(t for t, _ in out)) > w - 1:
+        t, st = out[-1]
+        t = fit(t, sw(t) - 1)
+        if t:
+            out[-1] = (t, st)
+            break
+        out.pop()
+    out.append(("…", out[-1][1] if out else ""))
+    return out
 def table_lines(rows, width, base):
     """Render a Markdown table block: bold header, dash rule, padded data rows.
-    The separator row (|---|---|) is consumed, not displayed."""
+    The separator row (|---|---|) is consumed, not displayed. Cell content goes
+    through inline(), so `code`, **bold** and links render styled instead of
+    leaking their markers into the table."""
+    def plain(c):
+        """Cell text without markdown markers (width-relevant)."""
+        return "".join(t for t, _ in inline(c))
     def cells(ln):
         s = ln.strip()
         if s.startswith("|"):
@@ -191,19 +227,31 @@ def table_lines(rows, width, base):
     is_sep = lambda r: any(c for c in r) and all(re.fullmatch(r":?-+:?", c) for c in r if c)
     header = next((r for r in parsed if not is_sep(r)), [])
     body = [r for i, r in enumerate(parsed) if r is not header and not is_sep(r)]
-    widths = [max(sw(r[c]) for r in [header] + body) for c in range(ncol)]
+    widths = [max(sw(plain(r[c])) for r in [header] + body) for c in range(ncol)]
     total = sum(widths) + 2 * (ncol - 1)
     if total > width:  # shrink columns to fit the terminal
         budget = max(width - 2 * (ncol - 1), ncol)
         widths = [max(1, int(w * budget / max(total - 2 * (ncol - 1), 1))) for w in widths]
     def fmt(r, style):
-        txt = "  ".join(fit(r[c], widths[c]).ljust(widths[c]) for c in range(ncol)).rstrip()
-        return emit([(txt, style)], base)
+        segs = []
+        for c in range(ncol):
+            cell = cut_segs(inline(r[c], style), widths[c])
+            segs += cell + [(" " * (widths[c] - sw("".join(t for t, _ in cell))), style)]
+            if c < ncol - 1:
+                segs.append(("  ", style))
+        while segs:  # trailing padding must not reach the screen (visual diff noise)
+            t, st = segs[-1]
+            trimmed = t.rstrip()
+            if trimmed:
+                if trimmed != t:
+                    segs[-1] = (trimmed, st)
+                break
+            segs.pop()
+        return emit(segs, base)
     out = [fmt(header, "b")]
     out.append(emit([("  ".join("─" * w for w in widths).rstrip(), "")], DARK))
     out += [fmt(r, "") for r in body]
     return out
-HEAD_EMOJI = {1: "\U0001F4CC ", 2: "\U0001F538 "}  # only top levels: a marker on every heading would be noise
 TASK = {" ": "\u2610", "x": "\u2611"}  # "- [ ]" / "- [x]" checkboxes; a checklist marker is a symbol, not emoji
 def md_lines(text, width, base):
     out, code, rows, i = [], False, text.split("\n"), 0
@@ -218,9 +266,11 @@ def md_lines(text, width, base):
             for ch in chunks(ln, width - 2):
                 out.append(emit([("  " + ch + " " * (width - 2 - sw(ch)), "c")], base))
         elif (m := re.match(r"\s{0,3}(#{1,6})\s+(.*)", ln)):
-            pre = HEAD_EMOJI.get(len(m[1]), "")  # keeps the level signal on continuation lines
-            for k, l in enumerate(wrap_segs(inline(m[2], "bu" if len(m[1]) < 3 else "b"), width - sw(pre))):
-                out.append(emit(l, base, pre if k == 0 else " " * sw(pre)))
+            # no emoji marker: a diamond in front of a headline reads like a list
+            # bullet. The level lives in the style (h1 bold+underlined, deeper bold),
+            # the accent in the user's chocolate color instead of the block grey.
+            for l in wrap_segs(inline(m[2], "bu" if len(m[1]) == 1 else "b"), width):
+                out.append(emit(l, GREY))
         elif re.fullmatch(r"\s*([-*_])\1{2,}\s*", ln):
             out.append(emit([("─" * width, "")], DARK))
         elif (m := re.match(r"(\s*)([-*+]|\d+[.)])\s+(.*)", ln)):

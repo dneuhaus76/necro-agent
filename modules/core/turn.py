@@ -4,6 +4,8 @@ thread (App._start_turn) and never touches the terminal, so it stays headless-te
 The caps and the peer helpers necro.py owns are injected once via configure()."""
 import hashlib, json, os, threading, time
 
+from modules.core import inference
+
 def configure(**kw):
     """Bind the config values necro.py owns (step/turn caps, timeouts, peer helpers)."""
     globals().update(kw)
@@ -80,10 +82,7 @@ class TurnMixin:
                     text, calls = self.agent.stream(tools=peer_turn_tools(getattr(self, '_peer_hops', 1)))
                 else:
                     text, calls = self.agent.stream()
-                m = {"role": "assistant", "content": text or None}
-                if calls:
-                    m["tool_calls"] = [{"id": c["id"], "type": "function", "function": {
-                        "name": c["name"], "arguments": c["args"] or "{}"}} for c in calls]
+                m = inference.assistant_msg(text, calls)
                 self.messages.append(m)
                 self._last_reply = m  # identity for the peer reply lookup (modules/io/api.py)
                 if not calls:

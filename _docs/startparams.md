@@ -14,7 +14,7 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 | Variable | cfg key | Default | Meaning |
 |---|---|---|---|
 | `NECRO_BASE_URL` | `baseurl` | `http://127.0.0.1:8080/v1` | OpenAI-compatible inference server URL |
-| `NECRO_MODEL` | `model` | `Qwen3.8-27B` | Main model (ID as delivered by `/models`) |
+| `NECRO_MODEL` | `model` | `gemma-4-E2B-it` | Main model (ID as delivered by `/models`) |
 | `NECRO_MAX_STEPS` | `max_steps` | `25` | Max agent steps per turn |
 | `NECRO_TURN_TIMEOUT` | `turn_timeout` | `3600` | Wall-clock timeout per turn in s (safety break; 0 = off) |
 | `NECRO_MAX_TURNS` | `max_turns` | `200` | Max turns per session (self-loop guard; 0 = off; `/new` resets) |
@@ -36,7 +36,8 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 | `NECRO_API_TOKEN` | – | – | Global Bearer token for the inference server (e.g. OpenRouter); overrides cfg `auth` |
 | `NECRO_TELEGRAM` | – | – | `1` = enable Telegram (like `--telegram`) |
 | `NECRO_TELEGRAM_TOKEN` | `telegram_token` | – | Bot token (only with `--telegram` / `NECRO_TELEGRAM=1`) |
-| `NECRO_TELEGRAM_CHATS` | `telegram_chats` | – | Chat-ID whitelist, comma-separated (empty/absent = all chats) |
+| `NECRO_TELEGRAM_CHATS` | `telegram_chats` | – | Chat-ID whitelist, comma-separated (empty/absent = nobody, deny-all) |
+| `NECRO_PROVIDERS` | `providers` | – | Provider overrides `host=name;host=name` (e.g. `myproxy=google`); needed behind a proxy that hides the real host (see providers.md) |
 | `NECRO_SESSION` | – | `run` | Session label for the turns-DB traces (data/necro.db) |
 | `NECRO_DB` | – | `data/necro.db` (project dir) | Path of the turns-DB file (multiple instances can use separate DB files) |
 
@@ -56,6 +57,7 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 | `max_steps` | int | `25` | Max agent steps per turn |
 | `max_turns` | int | `200` | Max turns per session (0 = off) |
 | `ctx_window` | int | `8192` | Fallback context window (real size from the inference server) |
+| `ctx_models` | dict | `{}` | Per-model context cap `{model: tokens}`; wins over the server window but never goes above it. Key = model name or a prefix of it; `-`, `.`, `_`, spaces and case are ignored (`Qwen3-8` hits `Qwen3.8-27B-Swift`). `"*"` = default for every model. Active entry shows as `(cap <key>)` in the status line and in `/status`. Keys starting with `_` are comments |
 | `peer_host` / `peer_port` | str / int | see above | Peer-API bind |
 | `peer_turn_timeout` | int | `600` | Max wall time of a peer turn in s |
 | `peer_max_hops` | int | `1` | Max peer hops in one chain |
@@ -65,13 +67,14 @@ Single Source of Truth for all configuration sources: CLI flag, env vars,
 | `max_output_tokens` | int | `0` | Output token cap when reasoning is off (0 = off) |
 | `step_timeout` | int | `300` | Socket timeout per step (s) |
 | `turn_timeout` | int | `3600` | Turn timeout (s; 0 = off) |
-| `telegram_chats` | str | – | Chat-ID whitelist (comma-separated) |
+| `telegram_chats` | str | – | Chat-ID whitelist (comma-separated; empty = nobody, deny-all) |
 | `telegram_token` | str | – | Bot token |
 | `telegram_format` | str | `markdown` | TG format: `text` \| `html` \| `markdown` |
 | `telegram_rich` | str | `auto` | Rich table detection (Bot API 10.1): `auto` \| `off` |
 | `colors` | dict | – | role -> 0-255 (roles from modules/core/palette.py `ROLES`) |
 | `tool_emoji` | dict | – | tool -> emoji string (unknown tools fall back to `›`) |
 | `auth` | dict | – | optional per-server access tokens `{url or host:port: token}`, sent as Bearer auth |
+| `providers` | dict | – | provider overrides `{base url or hostname: provider name}` (`openai`, `google`, `deepseek`); needed behind a proxy that hides the real host (see providers.md) |
 
 Keys with the `_doc` prefix are comments (ignored by validation). Unknown
 keys and wrong types are **warned at startup** (validation in

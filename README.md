@@ -134,7 +134,7 @@ alternative is a fast/non-thinking model).
 ## Features
 
 - **Tiny harness** — one main script plus a few modules, Python 3 standard library only, no dependencies to install
-- **Automatic context size** — NECRO queries the inference server for the model's current context window (`--ctx-size`) at startup; no manual `ctx_window` needed
+- **Automatic context size** — NECRO queries the inference server for the model's current context window (`--ctx-size`) at startup; no manual `ctx_window` needed. On a slow server the window is not the real limit — prefill time is: `ctx_models` caps the context per model, e.g. `{"Qwen3-8": 16000}` (separator/case tolerant, `"*"` = default); the active entry is shown as `(cap …)` in the status line
 - **Telegram bot** — drive a session from your phone: send prompts, `/stop`, `/new`, `/status`, `/help`; chat-ID whitelist keeps strangers from spending your tokens
 - **Peer & Swarm** — NECRO instances talk to each other: a fleet of containers can work on the same project in parallel — see above
 - **Sub-agents** — `delegate` (hand a task to another model) and `consult` (bot-to-bot dialogue with follow-up questions)
@@ -213,6 +213,7 @@ Deeper dives live in `_docs/`:
 | Doc | Content |
 |-----|---------|
 | [`startparams.md`](_docs/startparams.md) | All configuration sources: CLI flags, env vars, `necro.cfg` keys (single source of truth) |
+| [`providers.md`](_docs/providers.md) | Provider profiles (openai/google/deepseek) and the model probe (`/model`) |
 | [`agent-lifecycle.md`](_docs/agent-lifecycle.md) | The agent loop: turns, steps, tool execution, sub-agents |
 | [`peer-mechanism.md`](_docs/peer-mechanism.md) | How sibling instances discover each other and delegate turns |
 | [`swarm.md`](_docs/swarm.md) | Swarm sub-agents: delegate/consult, name resolution, availability checks |

@@ -86,7 +86,7 @@ class KeyHandler:
         if not word:
             return
         if word.startswith("/") and word.count("/") == 1:  # internal command
-            cmds = ("/help", "/quit", "/clear", "/new", "/model", "/cd", "/review", "/test", "/plan")
+            cmds = ("/help", "/status", "/quit", "/clear", "/new", "/model", "/cd", "/review", "/test", "/plan")
             self._tab_apply([c for c in cmds if c.startswith(word)], "", word, start, cur, b, single_extra=" ")
             return
         d, name = os.path.split(word)
@@ -118,6 +118,17 @@ class KeyHandler:
         self.buf = self.history[i] if i < len(self.history) else ""  # i=len = present, i=len-1 = newest
         self.cur = len(self.buf)
         return True
+    WHEEL_LINES = 3  # lines per wheel notch (terminal convention)
+    def mouse(self, b, press):
+        """Mouse report (button code b, press/release) - only the wheel acts:
+        it scrolls the content area, so the transcript is reachable without
+        touching the prompt history (arrows stay history-only)."""
+        if not press or not b & 64:  # releases and clicks are ignored; bit 6 = wheel
+            return
+        if b & 1:  # wheel down: towards the present
+            self.scroll = max(0, self.scroll - self.WHEEL_LINES)
+        else:  # wheel up: back into the transcript (draw() clamps to the top)
+            self.scroll += self.WHEEL_LINES
     def csi(self, p, f):
         # one page = the visible content area (H - 9: 2 header + 1 separator +
         # 6 footer lines); H - 5 scrolled 4 lines past the viewport per press
@@ -161,6 +172,20 @@ class KeyHandler:
                     return
                 self.ins(r[6:e].replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    "))
                 self.rx = r[e + 6:]
+            elif r.startswith("\x1b[<"):  # SGR mouse report (1006): <b;x;yM/m
+                m = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])", r)
+                if not m:
+                    if len(r) < 16:  # incomplete report: wait for the rest
+                        return
+                    self.rx = r[1:]  # malformed: drop the ESC, keep parsing
+                    continue
+                self.mouse(int(m[1]), m[4] == "M")
+                self.rx = r[m.end():]
+            elif r.startswith("\x1b[M"):  # legacy X10 report: 3 offset bytes
+                if len(r) < 6:
+                    return
+                self.mouse(ord(r[3]) - 32, (ord(r[3]) - 32) & 3 != 3)  # button 3 = release
+                self.rx = r[6:]
             elif len(r) == 1:
                 return
             elif r[1] in "[O":

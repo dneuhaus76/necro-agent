@@ -17,7 +17,8 @@ chat.
 
 - Source (first match wins): env `NECRO_TELEGRAM_CHATS`, then cfg
   `telegram_chats` — comma-separated chat ids.
-- **Empty allow-list = everyone** (open mode, e.g. local testing).
+- **Empty allow-list = nobody** (deny-all). A bot without a whitelist
+  answers no one.
 - A message from an unknown chat is answered with
   `(unknown chat <id> - not in the whitelist)` and **no turn is started** —
   no tokens spent. The stranger is parked in a separate queue
@@ -30,12 +31,19 @@ chat.
 |---|---|
 | `/stop` | Interrupt the current turn |
 | `/new` | New session (reset context) |
-| `/quit` | Quit NECRO |
-| `/status` | Context/token usage |
+| `/quit` | Quit NECRO (aborts a running turn first) |
+| `/status` | Token/context usage (real, or a labelled estimate) - answered immediately, also mid-turn |
 | `/help` | This list |
+| `/tgcommands [clear]` | (Re)push / remove the Telegram client command menu (`setMyCommands`) |
 | `<text>` | Normal prompt (starts a turn) |
 
 Anything that is not a command is a prompt.
+
+The command list is a single source (`TG_COMMAND_SPECS` in `necro.py`): the
+`/help` text is derived from it, and the same list is pushed to Telegram at
+startup via `setMyCommands` (best effort — a failure only logs a warning).
+Telegram shows the entries in its own `/` menu. Descriptions are cut to 25
+chars (Bot API hard limit).
 
 ## Progress feedback
 
@@ -44,6 +52,17 @@ Anything that is not a command is a prompt.
 - **Milestones:** one message every `TG_MILESTONE_EVERY` = 20 steps
   (`⏳ milestone N: step X/25`) — a long turn stays visible without spam.
 - The final reply is sent as `✅ done` + the agent text.
+
+## File exchange
+
+- **Out:** `send_file(chat_id, path, caption)` — `sendDocument`, any file type,
+  50 MB Bot API limit. Long text (> 4000 chars) is sent as a `.md` document.
+- **In:** incoming `document` / `photo` (largest size) messages are downloaded
+  to `/tmp/necro-tg/<epoch>_<name>` via `getFile` + fetch, then routed as a
+  prompt `[telegram file] <path> - <caption>`. The agent reads the file with
+  its normal file tools. Filenames are untrusted: basename only (no path
+  traversal). Download failure drops the message silently (no crash).
+  Media-only messages (no caption) are routed too.
 
 ## Busy handling
 

@@ -80,6 +80,8 @@ selection and scrollback survive.
 - `self.scroll` = lines anchored above the viewport; new lines keep the view
   anchored (`scroll += tot - last_tot`), clamped to `[0, tot - ch]`.
 - PgUp / PgDn adjust it. One page = the visible content area.
+- **Mouse wheel** (SGR mouse mode `1000+1006`): 3 lines per notch
+  (`WHEEL_LINES`), so the transcript is reachable without a keyboard.
 
 ## Input Handling (modules/ui/keys.py)
 
@@ -108,5 +110,9 @@ reflect the overrides. Roles are validated against `ROLES` in
 ^t thinking · ^o tools · ^x edits
 ↑/↓ history · PgUp/PgDn scroll · Alt+Enter newline
 TAB complete (/commands) · Esc abort / close menu · ^c clear (idle) / abort (busy)
-/help · /model [name] · /cd <dir> · /clear|/new · /review /test /plan · /quit
+/help · /status · /model [name] · /cd <dir> · /clear|/new · /review /test /plan · /quit
 ```
+
+`/help` and `/status` are read-only: they answer immediately, even while a turn
+runs. Everything else (and every prompt) is queued and picked up at the next
+step boundary; `/quit` aborts a running turn before it exits.

@@ -54,6 +54,33 @@ because `os.replace` swaps the data file's inode. Locks release on FD close
 On open, turns/sessions/traces older than 7 days are deleted. This is the
 horizon for `recall()` – older sessions are no longer searchable.
 
+A long-running instance never reopens the DB, so `/clear` and `/new` also
+call `SessionDB.prune()` (cheap no-op when nothing is old). `PRUNE_DAYS`
+(constant) is the single source for the window.
+
+## Schema Migration
+
+A pre-session DB (a `turns` table without a `session` column) cannot be
+reconciled. Instead of the old `DROP TABLE turns` – which destroyed real
+history – the table is renamed to `turns_legacy_<YYYYMMDD>` (suffix `_1`,
+`_2`, … if a name is taken) and its FTS triggers are dropped so they cannot
+shadow the new ones. The archive stays readable; the new `turns` table
+starts empty.
+
+The required schema objects live in the module-level `_SCHEMA` tuple
+(`SSOT`); the fast open path counts their existence against
+`len(_SCHEMA)` instead of a hard-coded number, so adding an object cannot
+desync the check.
+
+## Shutdown
+
+`SessionDB.close()` (also via `with SessionDB(path) as db:`) checkpoints the
+WAL and releases the handle; `main()` calls it in its `finally`.
+`close()` is idempotent and sets `closed = True` – `App.db_sync()` checks
+that flag, so a straggler daemon thread cannot raise `ProgrammingError`
+during shutdown. `PRAGMA journal_size_limit` (`WAL_LIMIT`, 4 MB) bounds the
+WAL file, which otherwise only grows.
+
 ## Core Methods (`SessionDB`)
 
 | Method | Purpose |
@@ -62,6 +89,8 @@ horizon for `recall()` – older sessions are no longer searchable.
 | `sync(messages)` | Mirrors the active context (all except system) into `turns`; incremental – trimmed head lines are kept as `compacted=1` |
 | `recall(query, limit=10)` | Full-text search over past sessions (FTS5, BM25 ranking + LIKE fallback); OR semantics, prefix matching |
 | `trace(**fields)` | One DB row per turn with structured metrics (JSON) |
+| `prune()` | Retention pass (7 days) for long runners; called on open, `/clear` and `/new` |
+| `close()` / `with` | Checkpoints the WAL, releases the handle; idempotent, sets `closed` |
 
 ### `sync()` – Incremental Mirror
 

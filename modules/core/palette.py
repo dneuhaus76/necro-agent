@@ -14,7 +14,7 @@ PALETTE = {
     "telegram": 38,    # blue      - telegram info line
     "agent": 106,      # green     - header / swarm info / prompt marker / emblem
     "user": 216,       # chocolate - user text + input line
-    "grey": 250,       # grey      - agent markdown text
+    "grey": 244,       # grey      - agent markdown text
     "dark": 240,       # dark      - think / tool / info / separators
     "darker": 232,     # darker
     "red": 167,        # red       - error blocks

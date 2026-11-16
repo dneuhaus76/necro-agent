@@ -1,7 +1,7 @@
 """Peer API: a tiny local HTTP server so sibling NECRO instances can delegate
 full agent turns to each other. Ephemeral port (bind 0), discovery via /tmp/necro/necro-{id}.json,
 token auth from the discovery file. One-shot: the prompt runs as a normal turn in the peer's UI."""
-import json, os, queue, socket, threading, time
+import json, os, queue, secrets, socket, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 # own subdir so the host only needs to mount /tmp/necro (not all of /tmp)
@@ -9,6 +9,12 @@ PEER_DIR = Path(os.environ.get("NECRO_PEER_DIR", "/tmp/necro"))
 PEER_DIR.mkdir(parents=True, exist_ok=True)
 PEER_TURN_TIMEOUT = 600  # fallback (s) - max wall time of a peer turn; cfg 'peer_turn_timeout' / env wins
 OWN_ID = None  # set by PeerAPI.__init__ - unique per instance, PID is not (containers share PIDs)
+def token_ok(headers, token):
+    """Constant-time token check. The peer API may bind 0.0.0.0, and a byte-wise
+    '!=' leaks the token prefix through response timing. Bytes, so a non-ASCII
+    header value cannot raise TypeError."""
+    got = headers.get("X-Necro-Token") or ""
+    return secrets.compare_digest(got.encode(), (token or "").encode())
 def _atomic_write(path, text):
     """tmp + os.replace in the same dir - a crash mid-write never leaves a half file
     that peer_instances()/peer_prompt() would choke on. 0600: the file carries
@@ -354,13 +360,13 @@ def _make_handler(api):
             if self.path == "/api/health":
                 # token-checked like every other endpoint: with peer_host=0.0.0.0
                 # an unauthenticated health endpoint leaks id + busy state to the LAN
-                if self.headers.get("X-Necro-Token") != api.token:
+                if not token_ok(self.headers, api.token):
                     return self._ok(401, {"error": "bad token"})
                 self._ok(200, {"id": api.id, "busy": api.app.busy})
             else:
                 self._ok(404, {"error": "not found"})
         def do_POST(self):
-            if self.headers.get("X-Necro-Token") != api.token:
+            if not token_ok(self.headers, api.token):
                 return self._ok(401, {"error": "bad token"})
             if self.path == "/api/claim":  # parent-child topology hint (best-effort)
                 try:

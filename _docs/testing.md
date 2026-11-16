@@ -13,7 +13,7 @@ python3 -m pytest test/ -x -q
 
 - The suite is designed to run in seconds, not minutes.
 - `test_smoke.py` is the entry gate: every module must be importable, total
-  runtime < 5 s.
+  runtime < 8 s (gate: `test/test_zzz_budget.py`).
 
 ## Conventions
 
@@ -44,7 +44,7 @@ python3 -m pytest test/ -x -q
 | Tools / files | `test_filelock.py`, `test_concurrent_edit.py` |
 | Abort & retry | `test_abort_latency.py`, `test_ctrl_c.py`, `test_retry_window.py` |
 | Guard rails | `test_prompt_guard.py`, `test_reply_guard.py`, `test_max_output_tokens.py`, `test_error_color.py` |
-| Config / context | `test_necro_md_load.py`, `test_review_fixes.py`, `test_review_fixes2.py` |
+| Config / context | `test_necro_md_load.py`, `test_review_fixes.py`, `test_review_fixes2.py`, `test_retry_token_config.py` |
 
 `test_zzz_*` files run last on purpose (they need the full peer stack and are
 the slowest).

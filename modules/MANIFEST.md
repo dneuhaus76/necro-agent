@@ -13,6 +13,7 @@ Structure: `modules/core/` (pure logic), `modules/ui/` (rendering/sub-agent), `m
 | core.context | Context management (trimming, tool stats) | `trim_tool_results, under_after_trim, tool_stats, delegate_stats, tool_detail` | none |
 | core.filelock | Cross-process file lock (flock on a sidecar `.lock` file) | `file_lock(path, timeout)` (contextmanager) | fcntl, contextlib |
 | core.inference | HTTP connection to the inference server, SSE stream parsing | `open_conn, sse_events` | urllib.parse |
+| core.providers | Provider profiles (openai-compatible / google / deepseek): thinking field, native info API, key header; cfg/env overrides for proxies | `Profile, OPENAI, GOOGLE, DEEPSEEK, BY_NAME, resolve, thinking_field, native_headers, cfg_overrides, env_overrides, host_of` | urllib.parse |
 | core.probe | Inference server probe (model info, thinking detection) | `info_text, resolve, detect_thinking, fetch_model_info, default_info` | urllib.parse, concurrent.futures |
 | core.sessiondb | SQLite session DB (WAL mode, 7-day pruning) | `SessionDB` | none |
 | core.templates | Prompt template expansion (/review, /test, /plan) | `expand` | none |

@@ -177,7 +177,8 @@ class ViewMixin:
         sep = emit([("─" * W, "")], DARK)
         # ---- status line (pi-style): left ctx usage, right scroll + swarm availability
         pct = min(100.0, est * 100.0 / self.ctx) if self.ctx else 0.0
-        left = f"{pct:.1f}%/{self.ctx // 1000}k (auto)"
+        cap = getattr(self, "ctx_capped_key", None)
+        left = f"{pct:.1f}%/{self.ctx // 1000}k " + (f"(cap {cap})" if cap else "(auto)")
         # status keyed by (url, model) - duplicate names on different hosts stay separate;
         # online models in necro green (EMBLEM), offline in the standard dark color
         right_segs = [("↑%d " % self.scroll, DARK)] if self.scroll else []
