@@ -1,6 +1,6 @@
 # NECROMANCER (NECRO)
 
-*A self-hosted LLM agent for your terminal — it finds its siblings and works as a team. Zero dependencies, Python 3 stdlib only.*
+*​A self-hosted **coding agent harness** for your terminal — it finds its siblings and works as a team. Zero dependencies, Python 3 stdlib only.*
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/)
