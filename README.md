@@ -44,7 +44,7 @@ no package manager, nothing to install — it is the Python standard library.
 
 | `necro console` (gives my orders to...) | `necro console` (peered), `http request` (delegated,consulted) |
 |:---:|:---:|
-| ![click to view necro in action]([url](https://github.com/user-attachments/assets/36e32e99-d104-4f27-a97d-de4c393aa32b)) | ![click to view necro in action]([url](https://github.com/user-attachments/assets/7d45033e-652b-48d4-a1b7-53a8b3ba8075)) |
+| [`click to view necro in action`](_docs/necro-console_dd863ce67d04.gif) | [`click to view necro in action`](_docs/necro-console_c9c9ea8e023a.gif) |
 
 <img alt="image" src="https://github.com/user-attachments/assets/d1dc83af-7d23-481e-aaac-63b0b96cc424" />
 
