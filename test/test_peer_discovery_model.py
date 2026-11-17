@@ -32,7 +32,7 @@ def _api(peer_env, model=None, url=None):
     class App:
         peer_tag = "peer"
 
-    a = api.PeerAPI(App(), host="127.0.0.1", port=0, turn_timeout=5, model=model, url=url)
+    a = api.PeerAPI(App(), host="127.0.0.1", port=0, peer_turn_timeout=5, model=model, url=url)
     _MADE.append(a)
     return api, a
 
@@ -54,7 +54,7 @@ def test_discovery_omits_absent_fields(peer_env):
     api, a = _api(peer_env)
     d = _read(a)
     assert "model" not in d and "url" not in d
-    assert {"id", "host", "ip", "port", "token", "peer_turn_timeout", "pid", "cwd"} <= set(d)
+    assert {"id", "host", "ip", "port", "token", "peer_turn_timeout_s", "pid", "cwd"} <= set(d)
 
 
 def test_announce_updates_model_after_switch(peer_env):

@@ -40,24 +40,24 @@ def test_claim_set_release_and_ttl():
 
 def test_claim_ttl_tracks_turn_timeout():
     """F1: PEER_CLAIM_TTL must outlive the longest peer turn, else a live claim
-    goes stale mid-flight. PeerAPI.__init__ re-derives it as turn_timeout + 600."""
+    goes stale mid-flight. PeerAPI.__init__ re-derives it as peer_turn_timeout + 600."""
     from modules.io import api
     old = api.PEER_CLAIM_TTL
     try:
         # a long peer turn (3600 s) must not drop its own claim at 900 s
-        api.PeerAPI(FakeApp(), host="127.0.0.1", port=0, turn_timeout=3600)
+        api.PeerAPI(FakeApp(), host="127.0.0.1", port=0, peer_turn_timeout=3600)
         assert api.PEER_CLAIM_TTL >= 3600 + 600
     finally:
         api.PEER_CLAIM_TTL = old
 
 
 def test_claim_ttl_keeps_floor_for_short_turns():
-    """F1: a short turn_timeout must not shrink the TTL below the 900 s floor
+    """F1: a short peer_turn_timeout must not shrink the TTL below the 900 s floor
     (the crashed-claimer backstop stays meaningful even for quick turns)."""
     from modules.io import api
     old = api.PEER_CLAIM_TTL
     try:
-        api.PeerAPI(FakeApp(), host="127.0.0.1", port=0, turn_timeout=60)
+        api.PeerAPI(FakeApp(), host="127.0.0.1", port=0, peer_turn_timeout=60)
         assert api.PEER_CLAIM_TTL >= 900  # floor kept, not 60 + 600 = 660
     finally:
         api.PEER_CLAIM_TTL = old
@@ -172,7 +172,8 @@ def _agent_setup(api, monkeypatch, inst):
     monkeypatch.setattr(api_mod, "peer_prompt", fake_prompt)
     monkeypatch.setattr(api_mod, "peer_health", lambda x, timeout=2: (False, None))
     monkeypatch.setattr(api_mod, "peer_claim", fake_claim)
-    ag = agent_mod.Agent(app, "http://x/v1", 5, [], [], [], {}, "", "")
+    # peer_max_hops=2: the claim tests run a peer turn that calls a peer (hop 2)
+    ag = agent_mod.Agent(app, "http://x/v1", 5, [], [], [], {}, "", "", peer_max_hops=2)
     return api_mod, app, ag, calls, claims
 
 

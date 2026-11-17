@@ -4,7 +4,7 @@ Pure text helpers live in modules/ui/render.py - this module adds the App state
 the values necro.py owns are injected once via configure() (SSOT stays there)."""
 import bisect, os, shutil, subprocess, time
 from modules.ui import render as _render
-from modules.ui.render import (CHOCOLATE, GREY, DARK, RED, TELEGRAM, EMBLEM,
+from modules.ui.render import (USER, TEXT, MUTED, ERROR, TELEGRAM, ACCENT,
                                cw, sw, clean, chunks, fit, emit, wrap_segs, md_lines, menu_line,
                                is_err)
 
@@ -37,21 +37,21 @@ class ViewMixin:
             is_tg = lines_t[0].startswith("[telegram")
             for n, ln in enumerate(lines_t):
                 for j, l in enumerate(wrap_segs([(ln, "")], w - 2)):
-                    sym = "" if (n == j == 0 and is_peer) else (f"\x1b[0;1;m{SYM} " if n == j == 0 else "  ")
-                    base = EMBLEM if is_peer else (TELEGRAM if is_tg else CHOCOLATE)  # whole TG block in its color
+                    sym = "" if (n == j == 0 and is_peer) else (f"\x1b[0;1;m{MARK_USER} " if n == j == 0 else "  ")
+                    base = ACCENT if is_peer else (TELEGRAM if is_tg else USER)  # whole TG block in its color
                     sym_s = f"\x1b[0;{base}m{sym}\x1b[0m" if sym.strip() else sym
                     L.append(sym_s + emit(l, base))
         elif k == "agent":
-            L = md_lines(t.strip("\n"), w, GREY)
+            L = md_lines(t.strip("\n"), w, TEXT)
         elif k == "pre":  # preformatted (emblem): no word wrap, spaces preserved; faded dark green
             for ln in t.split("\n"):
-                L += [emit([(c, "")], EMBLEM) for c in chunks(ln, w)]
+                L += [emit([(c, "")], ACCENT) for c in chunks(ln, w)]
         elif k == "think":
             # the head line stays visible in both states (expanded = body below it)
-            L = [emit([(TOOL_EMOJI["thinking"] + " thinking..." + ("" if self.think else " (Ctrl-t to show)"), "i")], DARK)]  # default via SSOT (palette.EMOJI); cfg 'tool_emoji' overrides
+            L = [emit([(TOOL_EMOJI["thinking"] + " thinking..." + ("" if self.think else " (Ctrl-t to show)"), "i")], MUTED)]  # default via SSOT (palette.EMOJI); cfg 'tool_emoji' overrides
             if self.think:
                 for ln in t.strip("\n").split("\n"):
-                    L += [emit(l, DARK, "┊ ") for l in wrap_segs([(ln, "i")], w - 2)]
+                    L += [emit(l, MUTED, "┊ ") for l in wrap_segs([(ln, "i")], w - 2)]
         elif k == "recall":
             # recall renders like the thinking line (gutter + italic) and follows the
             # ^t toggle: it is context lookup, not a tool action the user must audit.
@@ -60,17 +60,17 @@ class ViewMixin:
             hits = [ln for ln in body if ln.strip()]
             n_hits = 0 if hits and hits[0].startswith("no matches") else len(hits)
             label = f"{TOOL_EMOJI['thinking']} recall {q} · {n_hits} hit{'s' if n_hits != 1 else ''}"
-            L = [emit([(label + ("" if self.think else " (Ctrl-t to show)"), "i")], DARK)]
+            L = [emit([(label + ("" if self.think else " (Ctrl-t to show)"), "i")], MUTED)]
             if self.think:
                 for ln in body:
-                    L += [emit(l, DARK, "┊ ") for l in wrap_segs([(ln, "i")], w - 2)]
+                    L += [emit(l, MUTED, "┊ ") for l in wrap_segs([(ln, "i")], w - 2)]
         elif k == "tool":
             head, *body = t.rstrip().split("\n")
-            sym = TOOL_EMOJI.get((head.split() or ["?"])[0], SYM_TOOL)  # cfg 'tool_emoji' overrides
+            sym = TOOL_EMOJI.get((head.split() or ["?"])[0], MARK_TOOL)  # cfg 'tool_emoji' overrides
             is_edit = head.startswith("edit_file")
             head_segs = [(head, "b")]
-            # swarm/peer tools are highlighted in necro green (EMBLEM) instead of dark
-            head_color = EMBLEM if (head.split() or ["?"])[0] in ("consult", "peer", "delegate") else DARK
+            # swarm/peer tools are highlighted in necro green (ACCENT) instead of dark
+            head_color = ACCENT if (head.split() or ["?"])[0] in ("consult", "peer", "delegate") else MUTED
             # an error result (convention: it starts with "error:") is painted red
             err = bool(body) and is_err(body[0])
             shown = self.show_edits if is_edit else self.show_tools
@@ -89,10 +89,10 @@ class ViewMixin:
                     # other tool bodies keep the 2-space indent
                     pre, bw = ("", w) if is_edit else ("  ", w - 2)
                     # edit lines are coloured over the full line width (padded with styled spaces)
-                    L += [emit([(c + " " * max(0, bw - sw(c)), st)], DARK, pre) for c in chunks(ln, bw)]
+                    L += [emit([(c + " " * max(0, bw - sw(c)), st)], MUTED, pre) for c in chunks(ln, bw)]
         else:  # info / error
             # per-block color override; errors ("error: ..." convention) are always red
-            base = b.color or (RED if k == "error" or is_err(t) else DARK)
+            base = b.color or (ERROR if k == "error" or is_err(t) else MUTED)
             for ln in t.split("\n"):
                 L += [emit(l, base) for l in wrap_segs([(ln, "")], w)]
         b.key, b.lines = key, L
@@ -109,11 +109,11 @@ class ViewMixin:
     def input_lines(self, spin, W):
         """The input as wrapped plain lines (pi-style: wrap at the right edge instead
         of a one-line scrolling window). Spinner frame while busy, '›' otherwise
-        (same width, no cursor jump); marker and text share CHOCOLATE so the prompt
+        (same width, no cursor jump); marker and text share USER so the prompt
         does not change color once the user starts typing.
         Returns (lines, cur_row, cur_col): wrapped lines, and the 0-based row /
         1-based col of the cursor within them."""
-        text = (spin if self.busy else SYM) + " " + self.buf.replace("\n", "↵")
+        text = (spin if self.busy else MARK_USER) + " " + self.buf.replace("\n", "↵")
         width, lines, starts, s0, n = W - 1, [], [0], 0, 0
         for i, ch in enumerate(text):
             c = cw(ch)
@@ -126,39 +126,48 @@ class ViewMixin:
         return lines, row, 1 + sw(text[starts[row]:ci])
     def draw(self, spin_only=False):
         W, H = shutil.get_terminal_size((80, 24))
-        spin = SPIN[int(time.time() * 10) % 10] if self.busy else " "
+        spin = SPINNER[int(time.time() * 10) % 10] if self.busy else " "
         inp_plain, cur_row, cur_col = self.input_lines(spin, W)
         n_in = len(inp_plain)
         # 2 header lines + 1 separator + footer (hint/sep/input x n_in/sep/cwd/status)
         ch = max(H - 9 - (n_in - 1), 1)  # wrapped input lines take room from the content
-        step = f" {self.step}/{MAX_STEPS} " if self.busy else " "
-        think_lbl = self.reasoning_effort if self.reasoning_effort else ("on" if self.reasoning else "off")
+        step = f" {self.step}/{TURN_MAX_STEPS} " if self.busy else " "
+        # think:<server state> - the server decides what really happens. When it
+        # contradicts the ^t toggle, show both ('on/off' = requested/server) so a
+        # preset that disables reasoning is visible instead of a silent toggle.
+        req = "on" if self.reasoning else "off"
+        think_lbl = self.reasoning_effort or req
+        if think_lbl in ("on", "off") and think_lbl != req:
+            think_lbl = f"{req}/{think_lbl}"
         h1l = f" 💀 NECRO v{VERSION}"
-        h1m = fit(f" · {self.model} · think:{think_lbl} · {BASE}", W - sw(h1l) - sw(step) - 4)
+        h1m = fit(f" · {self.model} · think:{think_lbl} · {BASE_URL}", W - sw(h1l) - sw(step) - 4)
         h1r = f"{step} 💀 "
-        panel = _render.bg("panel-bg")  # header / status background (palette role)
-        h1 = (f"\x1b[0;1;{EMBLEM};{panel}m{h1l}\x1b[0;1;{_render.fg('header-fg')};{panel}m"
+        panel = _render.bg("panel_bg")  # header / status background (palette role)
+        h1 = (f"\x1b[0;1;{ACCENT};{panel}m{h1l}\x1b[0;1;{_render.fg('panel_text')};{panel}m"
               + f"{h1m}{' ' * max(0, W - sw(h1l) - sw(h1m) - sw(h1r))}{h1r}\x1b[0m")
         h2 = fit(" /help = keys & commands", W)
-        h2 = f"\x1b[0;{DARK};{panel}m{h2}{' ' * max(0, W - sw(h2))}\x1b[0m"
+        h2 = f"\x1b[0;{MUTED};{panel}m{h2}{' ' * max(0, W - sw(h2))}\x1b[0m"
         if spin_only and (spin, step, W, self.busy) == self._spin:  # no content change since last full draw
             return
         self._spin = (spin, step, W, self.busy)
         if spin_only:  # spinner frame changed but content did not: refresh only the header
             # lines + first input line so the terminal selection / scrollback survives
             y = ch + 4  # first footer line
-            first = emit([(inp_plain[0], "")], CHOCOLATE)
             f = [f"\x1b[1;1H\x1b[2K{h1}",
-                 f"\x1b[2;1H\x1b[2K{h2}",
-                 f"\x1b[{y + 2};1H\x1b[2K{first}"]
-            # keep the incremental-draw cache in sync so the next full draw does not
-            # rewrite these rows; the line write leaves the cursor at the line end -
-            # restore the wanted position (hide-move-show, only when it differs)
-            self._last_view = {**self._last_view, 1: h1, 2: h2, y + 2: first}
-            cr, cc = y + 2 + cur_row, cur_col
-            if (cr, cc) != (y + 2, 1 + sw(inp_plain[0])):
-                f.append(f"\x1b[?25l\x1b[{cr};{cc}H\x1b[?25h")
-            self._last_cursor = (cr, cc)  # keep the no-write-move check in sync
+                 f"\x1b[2;1H\x1b[2K{h2}"]
+            if self.busy:  # idle: the full draw that follows owns the prompt marker -
+                first = emit([(inp_plain[0], "")], USER)  # writing the spinner frame here
+                f.append(f"\x1b[{y + 2};1H\x1b[2K{first}")  # would cache a braille char that
+                # keep the incremental-draw cache in sync so the next full draw does not
+                # rewrite these rows; the line write leaves the cursor at the line end -
+                # restore the wanted position (hide-move-show, only when it differs)
+                self._last_view = {**self._last_view, 1: h1, 2: h2, y + 2: first}
+                cr, cc = y + 2 + cur_row, cur_col
+                if (cr, cc) != (y + 2, 1 + sw(inp_plain[0])):
+                    f.append(f"\x1b[?25l\x1b[{cr};{cc}H\x1b[?25h")
+                self._last_cursor = (cr, cc)  # keep the no-write-move check in sync
+            else:
+                self._last_view = {**self._last_view, 1: h1, 2: h2}
             try:
                 os.write(1, "".join(f).encode())
             except OSError:
@@ -174,17 +183,17 @@ class ViewMixin:
         view = L[max(0, end - ch):end]
         est = self.ctx_used or self.ctx_est  # real usage once known, cached estimate before
         # ---- footer: blank / --- / > input (wrapped, n_in lines) / --- / * cwd / * stats
-        sep = emit([("─" * W, "")], DARK)
+        sep = emit([("─" * W, "")], MUTED)
         # ---- status line (pi-style): left ctx usage, right scroll + swarm availability
         pct = min(100.0, est * 100.0 / self.ctx) if self.ctx else 0.0
         cap = getattr(self, "ctx_capped_key", None)
         left = f"{pct:.1f}%/{self.ctx // 1000}k " + (f"(cap {cap})" if cap else "(auto)")
         # status keyed by (url, model) - duplicate names on different hosts stay separate;
-        # online models in necro green (EMBLEM), offline in the standard dark color
-        right_segs = [("↑%d " % self.scroll, DARK)] if self.scroll else []
+        # online models in necro green (ACCENT), offline in the standard dark color
+        right_segs = [("↑%d " % self.scroll, MUTED)] if self.scroll else []
         for a in SWARM:
-            up = SWARM_UP.get((a["url"], a["model"]))
-            right_segs.append((" %s:%s" % (a["model"], "on" if up else "off"), EMBLEM if up else DARK))
+            up = swarm_up.get((a["url"], a["model"]))
+            right_segs.append((" %s:%s" % (a["model"], "on" if up else "off"), ACCENT if up else MUTED))
         right = fit(" ".join(t for t, _ in right_segs).strip(), max(W - sw(left) - 1, 1))
         # rebuild the colored segments to match the trimmed plain text (fit may cut mid-segment)
         segs, n, rw = [], 0, sw(right)
@@ -196,21 +205,21 @@ class ViewMixin:
                 break
             segs.append((t, c))
             n += sw(t)
-        right_col = "".join("\x1b[0;%s;%sm%s\x1b[0m" % (c, _render.bg("panel-bg"), t) for t, c in segs)
+        right_col = "".join("\x1b[0;%s;%sm%s\x1b[0m" % (c, _render.bg("panel_bg"), t) for t, c in segs)
         right_w = sum(sw(t) for t, _ in segs)  # real width of the colored segments (join spaces not included)
-        status = f"\x1b[0;{DARK};{_render.bg('panel-bg')}m{left}{' ' * max(1, W - sw(left) - right_w)}{right_col}\x1b[0m"
+        status = f"\x1b[0;{MUTED};{_render.bg('panel_bg')}m{left}{' ' * max(1, W - sw(left) - right_w)}{right_col}\x1b[0m"
         y = ch + 4  # first footer line
         # the horizontal popup menu (TAB candidates) takes the hint line; the
         # transient tab_hint (e.g. "queued - …") shows when no menu is open
         hint = menu_line(self.menu, self.menu_sel, W) if self.menu else \
-            (f"\x1b[0;{DARK}m{fit(self.tab_hint, W)}\x1b[0m" if self.tab_hint else "")
+            (f"\x1b[0;{MUTED}m{fit(self.tab_hint, W)}\x1b[0m" if self.tab_hint else "")
         cwd = os.getcwd()
         branch = git_branch()
         cwd_disp = fit(f"{cwd} ({branch})" if branch else cwd, W)
-        cwd_line = (f"\x1b[0;{_render.fg('header-fg')};{_render.bg('dark')}m{cwd_disp}{' ' * max(0, W - sw(cwd_disp))}\x1b[0m"
+        cwd_line = (f"\x1b[0;{_render.fg('panel_text')};{_render.bg('muted')}m{cwd_disp}{' ' * max(0, W - sw(cwd_disp))}\x1b[0m"
                     if time.time() - self._cwd_flash < 3.0  # cwd changed: flash the line for 3 s
-                    else f"\x1b[0;{DARK};{_render.bg('panel-bg')}m{cwd_disp}{' ' * max(0, W - sw(cwd_disp))}\x1b[0m")
-        inp_rows = {y + 2 + i: emit([(l, "")], CHOCOLATE) for i, l in enumerate(inp_plain)}
+                    else f"\x1b[0;{MUTED};{_render.bg('panel_bg')}m{cwd_disp}{' ' * max(0, W - sw(cwd_disp))}\x1b[0m")
+        inp_rows = {y + 2 + i: emit([(l, "")], USER) for i, l in enumerate(inp_plain)}
         # incremental draw - a token tick re-renders the WHOLE screen (header + all
         # content + footer); on a remote client that is heavy and flickers. Only rows
         # that actually changed are written; the input rows are written last with the

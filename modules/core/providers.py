@@ -34,21 +34,29 @@ GOOGLE = Profile("google", hosts=("googleapis.com",), thinking="omit", info_api=
 DEEPSEEK = Profile("deepseek", hosts=("deepseek.com",), thinking="struct",
                    detail=("ctx", "temp", "top_p", "arch"),
                    notes="thinking wants {'type': 'enabled'|'disabled'}, hosted")
-PROVIDERS = (GOOGLE, DEEPSEEK)  # only hosts with quirks: everything else is OPENAI
+BIGMOE = Profile("bigmoe", info_api="bigmoe",
+                 notes="BigMoeOnEdge runner: model details on /api/info, no /models")
+PROVIDERS = (GOOGLE, DEEPSEEK, BIGMOE)  # only hosts with quirks: everything else is OPENAI
 BY_NAME = {p.name: p for p in (OPENAI, *PROVIDERS)}
 def host_of(base):
     return (urlparse(base).hostname or "").lower()
-def resolve(base, overrides=None):
-    """Profile for a base URL. Priority: an explicit override from cfg 'providers'
-    ({base url or hostname: provider name} - needed behind a proxy that hides the
-    real host), then a hostname suffix match, then the OpenAI default."""
-    if isinstance(overrides, dict):
-        u = urlparse(base)
-        host = u.hostname or ""
-        for key in (base, host, f"{host}:{u.port}" if u.port else host):
-            name = overrides.get(key)
-            if isinstance(name, str) and name.lower() in BY_NAME:
-                return BY_NAME[name.lower()]
+def name_of(raw):
+    """Provider name from a config value ('BigMoe' -> 'bigmoe'); None when it is
+    not a known name. A typo must not break startup, so it stays None."""
+    return raw.strip().lower() if isinstance(raw, str) and raw.strip().lower() in BY_NAME else None
+def provider_name(cfg=None, env=None):
+    """Explicit provider name from cfg 'provider' (env NECRO_PROVIDER wins).
+    The direct way to name a runner whose hostname gives no hint (local IPs,
+    proxies, a BigMoeOnEdge runner)."""
+    env = os.environ if env is None else env
+    return name_of(env.get("NECRO_PROVIDER")) or name_of((cfg or {}).get("provider"))
+def resolve(base, name=None):
+    """Profile for a base URL. Priority: an explicit name (cfg 'provider',
+    per-agent 'provider' in cfg 'swarm', env NECRO_PROVIDER), then a hostname
+    suffix match, then the OpenAI default."""
+    explicit = name_of(name)
+    if explicit:
+        return BY_NAME[explicit]
     h = host_of(base)
     for p in PROVIDERS:
         if any(h == suffix or h.endswith("." + suffix) for suffix in p.hosts):
@@ -71,19 +79,3 @@ def native_headers(profile_or_base, token):
     if token:
         h[p.key_header or "Authorization"] = token if p.key_header else f"Bearer {token}"
     return h
-def cfg_overrides(cfg):
-    """cfg 'providers' as a string->string dict (invalid entries are dropped, a
-    typo must not break the probe)."""
-    raw = (cfg or {}).get("providers")
-    if not isinstance(raw, dict):
-        return {}
-    return {k: v.lower() for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
-def env_overrides():
-    """NECRO_PROVIDERS='host=name;host=name' - the env twin of cfg 'providers'."""
-    raw = os.environ.get("NECRO_PROVIDERS") or ""
-    out = {}
-    for part in raw.split(";"):
-        host, _, name = part.partition("=")
-        if host.strip() and name.strip().lower() in BY_NAME:
-            out[host.strip()] = name.strip().lower()
-    return out

@@ -52,7 +52,7 @@ def _google_get(path, token, timeout=5):
 def _google_model_id(model):
     """Native API id: 'models/x' and provider-prefixed 'google/x' both mean 'x'."""
     return model.rsplit("/", 1)[-1]
-def _google_model_info(model, ctx_fallback, token):
+def _google_model_info(base, model, ctx_fallback, token):
     """Google's OpenAI-compatible endpoint has no /models, but the native API
     (GET /v1beta/models/<model>) reports the real input token limit plus the
     sampling defaults. Returns None when the lookup fails (caller uses the
@@ -72,6 +72,44 @@ def _google_model_info(model, ctx_fallback, token):
         if m.get(key) is not None:
             info[field] = str(m[key])
     return info
+def _bigmoe_model_info(base, model, ctx_fallback, token):
+    """BigMoeOnEdge runner: no /models, the live model details sit on GET /api/info
+    (model name, arch, n_ctx, threads, load time). Returns None when the lookup
+    fails (caller uses the fallback, which then says so)."""
+    try:
+        c, u, _ = _conn(base, 3, token)
+        try:
+            # the runner serves the endpoint at the root ('/api/info'); the base path
+            # ('/v1/api/info') is the fallback for a proxied base url
+            paths = [u.path.rstrip("/") + "/api/info"]
+            if paths[0] != "/api/info":
+                paths.insert(0, "/api/info")
+            data = None
+            for path in paths:
+                c.request("GET", path, headers=_hdrs(token))
+                r = c.getresponse()
+                if r.status == 200:
+                    data = json.loads(r.read())
+                    break
+                r.read()  # drain the error body, the connection stays usable
+            if data is None:
+                return None
+        finally:
+            c.close()
+    except Exception:
+        return None
+    m = data.get("model") or {}
+    info = default_info(ctx_fallback)
+    info["status"] = data.get("state") or "hosted"
+    if isinstance(m.get("n_ctx"), int):
+        info["ctx"] = m["n_ctx"]
+    info["arch"] = m.get("arch") or ""
+    info["file"] = (m.get("path") or "").rsplit("/", 1)[-1]
+    if m.get("compute_threads"):
+        info["threads"] = str(m["compute_threads"])
+    if m.get("load_s"):
+        info["created"] = time.strftime("%Y-%m-%d", time.gmtime(time.time() - m["load_s"]))
+    return info
 def _hosted_fallback(base, model, ctx_fallback, reason=""):
     """Minimal info for hosted APIs whose /models endpoint is missing (e.g. the
     OpenAI-compatible Google endpoint) - the probe would otherwise leave /model
@@ -81,23 +119,49 @@ def _hosted_fallback(base, model, ctx_fallback, reason=""):
     info["status"] = f"hosted - {reason}" if reason else "hosted"
     info["arch"] = "text->text"
     return info
-NATIVE_INFO = {"google": _google_model_info}  # info_api -> loader (providers.Profile.info_api)
-def fetch_model_info(base, model, ctx_fallback, token=None, overrides=None):
-    """Model details from the llama.cpp model_manager API: context window (--ctx-size),
-    reasoning effort, status and sampling parameters. Fallback: ctx_fallback, '' for the rest.
-    token = optional per-server access token; overrides = cfg 'providers'."""
+# info_api -> loader (providers.Profile.info_api): a provider without a usable
+# /models endpoint points here. One row per provider - a new runner is one
+# Profile + one loader, nothing else.
+NATIVE_INFO = {"google": _google_model_info, "bigmoe": _bigmoe_model_info}
+def _arg(args, flag):
+    """Value after --flag in a server arg list, '' when absent or dangling."""
+    i = args.index(flag) if flag in args else -1
+    return args[i + 1] if 0 <= i < len(args) - 1 else ""
+def _reasoning(args):
+    """Server-side reasoning state from the llama.cpp launch args. An explicit
+    effort level (--chat-template-kwargs '{"reasoning_effort":"low"}') wins,
+    else the switch decides: 'off' when --reasoning is false/none/off or
+    --reasoning-budget is 0 (no tokens left for thinking), 'on' when the server
+    enables it explicitly. '' = the server says nothing about reasoning, so the
+    caller keeps the request toggle as the display fallback.
+    A preset started with `reasoning = false` emits no reasoning_content even
+    when the request asks for it - reporting 'on' there would be a lie."""
+    if m := re.search(r'"reasoning_effort"\s*:\s*"([^"]+)"', " ".join(args)):
+        return m.group(1)  # effort level rather than a switch (low/medium/high)
+    if v := _arg(args, "--reasoning-effort"):
+        return v
+    switch, budget = _arg(args, "--reasoning").lower(), _arg(args, "--reasoning-budget")
+    if switch in ("false", "none", "off"):
+        return "off"
+    if budget:
+        try:
+            if int(budget) == 0:
+                return "off"
+        except ValueError:
+            budget = ""  # malformed value: no claim in either direction
+    return "on" if switch or budget else ""
+def _models_info(base, model, ctx_fallback, token):
+    """Details from the OpenAI-compatible GET /models. None when the endpoint is
+    missing or fails; a dict with only the fallback ctx when the server answers
+    but publishes no model args (a runner without a model_manager API)."""
     info = default_info(ctx_fallback)
-    prof = providers.resolve(base, overrides)
-    if prof.info_api in NATIVE_INFO:  # no usable /models: the provider's native API answers
-        return (NATIVE_INFO[prof.info_api](model, ctx_fallback, token)
-                or _hosted_fallback(base, model, ctx_fallback, "native API lookup failed"))
     try:
         c, u, token = _conn(base, 3, token)
         try:
             c.request("GET", u.path.rstrip("/") + "/models", headers=_hdrs(token))
             r = c.getresponse()
             if r.status != 200:  # hosted API without a /models endpoint
-                return _hosted_fallback(base, model, ctx_fallback)
+                return None
             data = json.loads(r.read())
         finally:
             c.close()  # exception path (bad JSON, partial response) must not leak the socket (F3)
@@ -115,16 +179,15 @@ def fetch_model_info(base, model, ctx_fallback, token=None, overrides=None):
                 continue
             args = (m.get("status") or {}).get("args") or []
             def g(flag):  # value of a --flag in the server args, '' if absent or dangling
-                i = args.index(flag) if flag in args else -1
-                return args[i + 1] if 0 <= i < len(args) - 1 else ""
+                return _arg(args, flag)
             info["status"] = (m.get("status") or {}).get("value", "")
             if v := g("--ctx-size"):  # value configured on the server right now
                 try:
                     info["ctx"] = int(v)
                 except ValueError:
                     pass  # malformed value - keep the fallback, don't lose the rest
-            if mm := re.search(r'"reasoning_effort"\s*:\s*"([^"]+)"', " ".join(args)):
-                info["effort"] = mm.group(1)  # reasoning effort (reasoning is thinking)
+            if eff := _reasoning(args):  # server truth, not the request toggle
+                info["effort"] = eff
             info["temp"], info["top_k"] = g("--temperature"), g("--top-k")
             info["top_p"], info["min_p"] = g("--top-p"), g("--min-p")
             # extra details for /model (architecture, file, GPU/threads, penalties, KV cache, age)
@@ -142,8 +205,37 @@ def fetch_model_info(base, model, ctx_fallback, token=None, overrides=None):
             if m.get("created"):  # server-side model load timestamp -> human date
                 info["created"] = time.strftime("%Y-%m-%d", time.gmtime(m["created"]))
     except Exception:
-        return _hosted_fallback(base, model, ctx_fallback)  # no /models (e.g. Google): minimal info
+        return None  # no /models (e.g. Google native, dead server): the caller falls back
     return info
+
+
+def has_details(info, ctx_fallback):
+    """Did /models publish real details, or only the fallback context?"""
+    return bool(info) and (bool(info["arch"]) or info["ctx"] != ctx_fallback)
+
+
+def fetch_model_info(base, model, ctx_fallback, token=None, name=None):
+    """Model details: context window, reasoning effort, status, sampling parameters.
+    Fallback: ctx_fallback, '' for the rest. token = optional per-server access token;
+    name = explicit provider name (cfg 'provider' / env NECRO_PROVIDER).
+
+    A named provider with a native API answers directly (Google). Otherwise /models
+    is asked. Publishes the server no details (a BigMoeOnEdge runner serves /models
+    without args), the runner's own /api/info is asked before giving up - so a local
+    IP needs no provider name at all."""
+    prof = providers.resolve(base, name)
+    if prof.info_api in NATIVE_INFO:  # no usable /models: the provider's native API answers
+        return (NATIVE_INFO[prof.info_api](base, model, ctx_fallback, token)
+                or _hosted_fallback(base, model, ctx_fallback, "native API lookup failed"))
+    info = _models_info(base, model, ctx_fallback, token)
+    if has_details(info, ctx_fallback):
+        return info
+    if name is None:  # no name given: the runner may answer on its own API
+        if det := _bigmoe_model_info(base, model, ctx_fallback, token):
+            return det
+    return info or _hosted_fallback(base, model, ctx_fallback)
+
+
 def detect_thinking(base, model, token=None):
     """Probe whether the model emits reasoning when thinking is requested (one retry).
     Providers that reject the 'thinking' field (Google) are probed without it -
@@ -184,13 +276,13 @@ def info_text(model, info, prof=None):
     rows = [("ID", model), ("Status", info["status"] or "-"), ("Reasoning effort", info["effort"] or "-")]
     rows += [(label, info[key] or "-") for label, key in FIELDS if key in prof.detail]
     return "\n".join(f"{k:<16}: {v}" for k, v in rows)
-def resolve(cfg_think, base, model, ctx_fallback, on_done, token=None, overrides=None):
+def resolve(cfg_think, base, model, ctx_fallback, on_done, token=None, name=None):
     """Run both probes in parallel (non-blocking startup); on_done(info, think) fires with
     the results. think is None when cfg 'thinking' is an explicit bool (no probe needed).
-    token = optional per-server access token."""
+    token = optional per-server access token; name = explicit provider name."""
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(2) as ex:
-        f_info = ex.submit(fetch_model_info, base, model, ctx_fallback, token, overrides)
+        f_info = ex.submit(fetch_model_info, base, model, ctx_fallback, token, name)
         f_think = None if isinstance(cfg_think, bool) else ex.submit(detect_thinking, base, model, token)  # noqa
         info = f_info.result()
         think = f_think.result() if f_think else None

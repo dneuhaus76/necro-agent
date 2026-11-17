@@ -16,7 +16,9 @@ def fast_retry(monkeypatch):
 
 
 class FlakyHandler(BaseHTTPRequestHandler):
-    """fails the first N requests (connection closed without a response), then serves /models"""
+    """fails the first N requests (connection closed without a response), then serves
+    /models with 200 and every other path with 404 (a real runner answers only one
+    of the probe endpoints - the probe must not count a 404 as 'up')."""
     fails_left = 2
 
     def do_GET(self):
@@ -24,7 +26,7 @@ class FlakyHandler(BaseHTTPRequestHandler):
             type(self).fails_left -= 1
             self.close_connection = True
             return  # no response written -> client sees RemoteDisconnected
-        self.send_response(200)
+        self.send_response(200 if self.path == "/models" else 404)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b"{}")
@@ -50,7 +52,9 @@ def test_transient_failure_retried():
 
 
 def test_permanent_failure_offline():
-    srv, url = start_server(fails_left=CHECK_ATTEMPTS)  # every attempt fails
+    # every attempt fails: the probe tries all endpoints per attempt, so the
+    # flaky counter must cover attempts * endpoints
+    srv, url = start_server(fails_left=CHECK_ATTEMPTS * len(swarm.PROBE_PATHS))
     try:
         up = check_once([{"url": url, "model": "m"}])
         assert up[(url, "m")] is False
@@ -62,9 +66,10 @@ def test_check_pass_fits_in_interval():
     """F2: one full availability pass (worst case, all agents fail every attempt)
     must stay under the 30 s check interval, else the effective status latency
     doubles (pass 31.5 s + sleep 30 s = 61.5 s instead of ~30 s)."""
-    from modules.io.swarm import CHECK_ATTEMPTS, CHECK_RETRY_DELAY
+    from modules.io.swarm import CHECK_ATTEMPTS, CHECK_RETRY_DELAY, PROBE_PATHS
     agents = 3  # current cfg swarm size
-    worst_case = agents * CHECK_ATTEMPTS * (3 + CHECK_RETRY_DELAY)  # 3 s probe timeout + delay
+    probe_timeout = 2  # s per endpoint (see _probe)
+    worst_case = agents * CHECK_ATTEMPTS * (len(PROBE_PATHS) * probe_timeout + CHECK_RETRY_DELAY)
     assert worst_case < 30, f"full check pass {worst_case}s exceeds the 30s interval"
 
 

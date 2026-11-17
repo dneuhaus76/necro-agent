@@ -14,11 +14,11 @@ PLAIN = lambda lines: [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in lines]  # noqa:
 
 
 def md(text, width=40):
-    return PLAIN(r.md_lines(text, width, r.GREY))
+    return PLAIN(r.md_lines(text, width, r.TEXT))
 
 
 def raw(text, width=40):
-    return r.md_lines(text, width, r.GREY)
+    return r.md_lines(text, width, r.TEXT)
 
 
 # ---- headlines
@@ -34,8 +34,8 @@ def test_headline_levels_get_bold_and_no_marker():
 def test_headline_uses_the_chocolate_accent():
     """The accent replaces the block grey: a headline must not inherit the base color."""
     out = raw("# Titel\n\nText")
-    assert r.CHOCOLATE in out[0] and r.GREY not in out[0]
-    assert r.GREY in out[2]  # body text keeps the block color
+    assert r.USER in out[0] and r.TEXT not in out[0]
+    assert r.TEXT in out[2]  # body text keeps the block color
 
 
 def test_long_headline_wraps_without_indent():

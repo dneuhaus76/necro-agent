@@ -14,7 +14,7 @@ def env(tmp_path, monkeypatch):
     return necro
 
 
-RED = ";38;5;167m"  # palette "red" = 167 (see core.palette) - as an SGR suffix,
+ERROR = ";38;5;167m"  # palette "error" = 167 (see core.palette) - as an SGR suffix,
                     # it overrides the block base color (dark/grey/...)
 ERR_TEXT = "error: old text found 0x (exactly 1 required)"
 
@@ -41,11 +41,11 @@ def test_is_err_detects_convention():
 
 
 def test_sgr_error_flag_is_red_on_any_base():
-    from modules.ui.render import DARK, sgr
+    from modules.ui.render import MUTED, sgr
 
-    assert RED in sgr(DARK, "e")
-    assert RED not in sgr(DARK, "")  # no stray red without the flag
-    assert RED in sgr(DARK, "be") and ";1" in sgr(DARK, "be")  # bold + red
+    assert ERROR in sgr(MUTED, "e")
+    assert ERROR not in sgr(MUTED, "")  # no stray red without the flag
+    assert ERROR in sgr(MUTED, "be") and ";1" in sgr(MUTED, "be")  # bold + red
 
 
 def test_tool_error_body_is_red(env):
@@ -54,24 +54,24 @@ def test_tool_error_body_is_red(env):
     lines = app.render(blk, 80)
     body = lines[1:]
     assert ERR_TEXT in _plain(body)[0]
-    assert all(RED in l for l in body), lines
+    assert all(ERROR in l for l in body), lines
 
 
 def test_tool_success_body_stays_dark(env):
-    from modules.ui.render import DARK
+    from modules.ui.render import MUTED
 
     app = _app(env)
     lines = app.render(env.Block("tool", "bash  ls\na.py\nb.py"), 80)
-    assert RED not in "".join(lines)
-    assert all(DARK in l for l in lines[1:])
+    assert ERROR not in "".join(lines)
+    assert all(MUTED in l for l in lines[1:])
 
 
 def test_edit_error_body_is_red_not_diff_colored(env):
     """A failing edit has no diff to color - its "error:" line must be red."""
     app = _app(env, tools=False, edits=True)
     lines = app.render(env.Block("tool", "edit_file  a.py\n" + ERR_TEXT), 80)
-    assert RED in lines[1]
-    assert ";48;5;216" not in lines[1] and ";48;5;106" not in lines[1]  # no edit-old/new bg
+    assert ERROR in lines[1]
+    assert ";48;5;216" not in lines[1] and ";48;5;106" not in lines[1]  # no edit del/add bg
 
 
 def test_collapsed_error_head_signals_failure(env):
@@ -80,7 +80,7 @@ def test_collapsed_error_head_signals_failure(env):
     lines = app.render(env.Block("tool", "edit_file  a.py\n" + ERR_TEXT), 80)
     text = _plain(lines)[0]
     assert "(Ctrl-x to show)" in text and "· error" in text
-    assert RED in lines[0] and ";3" in lines[0]  # red + italic hint
+    assert ERROR in lines[0] and ";3" in lines[0]  # red + italic hint
 
 
 def test_collapsed_head_without_error_has_no_marker(env):
@@ -90,11 +90,11 @@ def test_collapsed_head_without_error_has_no_marker(env):
 
 
 def test_info_block_with_error_text_is_red(env):
-    from modules.ui.render import DARK
+    from modules.ui.render import MUTED
 
     app = _app(env)
-    assert RED in app.render(env.Block("info", ERR_TEXT), 80)[0]
-    assert DARK in app.render(env.Block("info", "cd: /tmp"), 80)[0]
+    assert ERROR in app.render(env.Block("info", ERR_TEXT), 80)[0]
+    assert MUTED in app.render(env.Block("info", "cd: /tmp"), 80)[0]
 
 
 def test_explicit_block_color_wins_over_red(env):

@@ -27,15 +27,15 @@ def token_for(base, auth):
         if k in (base, u.hostname, host) and isinstance(v, str):
             return v
     return None
-def open_conn(base, body, conns=None, timeout=300, token=None):
+def open_conn(base, body, conns=None, timeout=None, token=None):
     """POST /chat/completions and return (conn, response). On error the connection
     is closed and dropped from conns; the exception propagates to the caller.
-    timeout = per-socket-operation timeout (a hung stream must not block the turn
-    forever - now configurable via cfg 'step_timeout' / NECRO_STEP_TIMEOUT). The
-    default (300 s) matches the STEP_TIMEOUT default so a call without an explicit
-    timeout does not silently get 3x longer than intended (was 900 s, a relic of
-    the pre-STEP_TIMEOUT hardcode).
+    timeout = per-socket-operation timeout in s, REQUIRED: cfg 'step_timeout_s' /
+    NECRO_STEP_TIMEOUT_S owns the value. A default here would be a second copy of
+    that config value and drift from it (the 900 s relic was exactly such a copy).
     token = optional access token sent as 'Authorization: Bearer <token>'."""
+    if not timeout or timeout <= 0:
+        raise ValueError(f"open_conn: timeout must be > 0 s, got {timeout!r}")
     u = urlparse(base)
     cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
     conn = cls(u.hostname, u.port, timeout=timeout)
@@ -61,10 +61,11 @@ def open_conn(base, body, conns=None, timeout=300, token=None):
             pass
         raise
     return conn, r
-def thinking_value(base, on, overrides=None):
+def thinking_value(base, on, name=None):
     """Provider-specific 'thinking' request field - see core.providers (llama.cpp
-    takes a bool, DeepSeek a struct, Google rejects the field -> None = omit)."""
-    return providers.thinking_field(providers.resolve(base, overrides), on)
+    takes a bool, DeepSeek a struct, Google rejects the field -> None = omit).
+    name = explicit provider (cfg 'provider' / per-agent 'provider')."""
+    return providers.thinking_field(providers.resolve(base, name), on)
 def call_extra(tc):
     """Provider payload of one tool call that must be echoed back verbatim.
     Google's OpenAI-compatible endpoint returns the thought signature as

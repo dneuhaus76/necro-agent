@@ -13,7 +13,7 @@ stays headless-testable.
 ```
 App.turn()  (modules/core/turn.py)      Agent (modules/core/agent.py)
       │                                     │
-      │  for step in range(MAX_STEPS)       │
+      │  for step in range(TURN_MAX_STEPS)       │
       ├── safety breaks (stop/timeout/turns)│
       ├── agent.compact() ─────────────────►│  context < 80 % of the window
       ├── agent.stream(tools) ─────────────►│  SSE stream -> text + tool calls
@@ -27,12 +27,12 @@ App.turn()  (modules/core/turn.py)      Agent (modules/core/agent.py)
 ## The Turn (`TurnMixin.turn`, modules/core/turn.py)
 
 A turn is a single user request. It runs in its own thread (`_start_turn`)
-and repeats up to `MAX_STEPS` steps (default 25):
+and repeats up to `TURN_MAX_STEPS` steps (default 25):
 
 1. **Safety breaks** (checked per step):
    - `self.stop` (user abort, e.g. `^c` / `/stop`) → immediate abort.
-   - `TURN_TIMEOUT` (wall clock, default 3600 s) → `TimeoutError`.
-   - `MAX_TURNS` (per session, default 200) → turn ends, `/new` required.
+   - `TURN_TIMEOUT_S` (wall clock, default 3600 s) → `TimeoutError`.
+   - `SESSION_MAX_TURNS` (per session, default 200) → turn ends, `/new` required.
 2. **Queued prompt** — a prompt typed while the turn was running starts at
    the NEXT step boundary (before the agent decides its next action), not
    after the whole turn. The old turn breaks out; its `finally` must not
@@ -49,6 +49,17 @@ and repeats up to `MAX_STEPS` steps (default 25):
    with no visible output gets an explicit info marker in the TUI).
 7. **Calls present** → `agent.run_calls()`: parallel execution, results into
    the context, then the next step.
+
+### Tool-call boundary (`run_tool` / `_args_of`)
+
+Every field of a tool call comes from the model, i.e. it is untrusted input.
+`Agent._args_of()` guards it in one place: the call must be an object with a
+non-empty `name`, `args` may be a JSON string or an already-parsed object, the
+result must be a JSON object, and the arguments named in `_TOOL_REQUIRED` must
+be present and non-blank. Each violation returns an `error: <tool>: ...` STRING,
+which becomes one tool result. Before this guard a call without `args` raised
+`KeyError` and took the whole turn down. An exception inside a tool function is
+caught the same way: one bad call costs one result, never the turn.
 
 ### Parallelism (`ThreadPoolExecutor`)
 
@@ -103,10 +114,11 @@ character estimate):
   are trimmed to 2000 chars to avoid context bloat.
 
 Both use `SUB_TOOLS` (tool list minus `delegate`/`consult`/`peer`) — this
-prevents recursion and 409 loops. Peer turns are different: they use
+prevents recursion and 409 loops. `subagent_delegate` re-adds `delegate` and
+`consult` below `subagent_max_depth`. Peer turns are different: they use
 `peer_turn_tools(hops)` (see peer-mechanism.md, Recursion Guard), which keeps
-`delegate`/`consult` when `PEER_TURN_SUBAGENTS` is on and re-adds `peer`
-while `hops < PEER_MAX_HOPS`.
+`consult` always, adds `delegate` only when `PEER_TURN_SUBAGENTS` is on
+(default off) and re-adds `peer` while `hops < PEER_MAX_HOPS`.
 
 ### Tool Dispatch
 

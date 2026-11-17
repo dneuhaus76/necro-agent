@@ -19,25 +19,34 @@ A `Profile` is a `NamedTuple` with 6 fields:
 | `detail` | rows that `/model` shows for this provider |
 | `notes` | free text |
 
-Three profiles exist:
+Four profiles exist:
 
 | Profile | Hosts | Thinking field | Notes |
 |---|---|---|---|
 | `openai` (default) | everything else | `bool` | plain `/chat/completions` + `/models` (llama.cpp, vLLM, OpenRouter, ...) |
 | `google` | `googleapis.com` | `omit` (the field is rejected with HTTP 400) | no `/models` on the OpenAI endpoint; native API lookup |
 | `deepseek` | `deepseek.com` | `struct` (`{"type": "enabled"}`) | hosted, flat `/models` fields |
+| `bigmoe` | none (name it) | `bool` | BigMoeOnEdge runner: model details on `/api/info` |
 
 ### Resolution (`providers.resolve`)
 
-Priority: explicit override, then hostname suffix match, then the OpenAI
-default.
+Priority: explicit name, then hostname suffix match, then the OpenAI default.
+One way to name a runner - no separate override table.
 
-- **cfg `providers`** – dict `{base url or hostname: provider name}`. Needed
-  behind a proxy that hides the real host. Invalid entries are dropped
-  (a typo must not break the probe).
-- **env `NECRO_PROVIDERS`** – `host=name;host=name` (the env twin of cfg
-  `providers`).
+- **cfg `provider`** – runner of the main endpoint (`base_url`). Needed only
+  when the hostname gives no hint: a local IP or a proxy.
+- **cfg `swarm[].provider`** – the same for a swarm server. Each entry names
+  its own runner, so a BigMoeOnEdge agent and a llama.cpp agent can sit in
+  one list.
+- **env `NECRO_PROVIDER`** – wins over cfg `provider` for the main endpoint.
 - **Hostname suffix** – `googleapis.com`, `deepseek.com`.
+
+A wrong name is ignored (a typo must not break startup); the hostname then
+decides. `providers.name_of` normalises the value (`BigMoe` -> `bigmoe`).
+
+Naming is optional: when no name is given and `/models` publishes no server
+details, the probe asks the runner's own `/api/info` (BigMoeOnEdge). A local
+IP therefore needs no `provider` key at all. An explicit name skips that probe.
 
 ### Thinking field (`providers.thinking_field`)
 
@@ -52,7 +61,7 @@ travels in the header, never in the URL (query strings end up in logs).
 
 ## Model Probe (modules/core/probe.py)
 
-`fetch_model_info(base, model, ctx_fallback, token, overrides)` runs at
+`fetch_model_info(base, model, ctx_fallback, token, name)` runs at
 startup (parallel with thinking detection, `probe.resolve`). It returns a
 dict with: context window, reasoning effort, status, sampling parameters,
 architecture, file, GPU layers, threads, KV cache, created date.
@@ -64,13 +73,22 @@ Lookup order:
    on 401/403).
 2. **OpenAI `/models`** – llama.cpp model_manager args (`--ctx-size`,
    `--temperature`, ...) or flat hosted fields (`context_window`, `effort`).
-3. **Hosted fallback** – minimal info (`status: hosted`, `arch:
+3. **Runner `/api/info`** – only when step 2 gave no details and no provider
+   name was set (BigMoeOnEdge): name, arch, `n_ctx`, threads, load time.
+4. **Hosted fallback** – minimal info (`status: hosted`, `arch:
    text->text`) when no lookup works. A reason string marks a failed
    lookup.
 
 `detect_thinking(base, model, token)` sends one 16-token request and checks
 for `reasoning_content`. Providers that reject the `thinking` field are
 probed without it.
+
+The reported **effort** is the server truth from the launch args
+(`_reasoning`): `--chat-template-kwargs '{"reasoning_effort":"low"}'` or
+`--reasoning-effort` win, then `--reasoning` and `--reasoning-budget`.
+`--reasoning false` or `--reasoning-budget 0` means `off` – such a preset
+emits no reasoning, whatever the request asks for. No such flag means
+unknown (`""`), and the display falls back to the request toggle.
 
 ## The `/model` Command
 

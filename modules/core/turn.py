@@ -34,13 +34,13 @@ class TurnMixin:
         self._last_turn_error = None  # abort reason for the peer reply (do_POST reads it)
         try:
             self.turns += 1
-            if MAX_TURNS and self.turns > MAX_TURNS:  # per-session turn cap
-                msg = f"max turns per session ({MAX_TURNS}) reached - /new or NECRO_MAX_TURNS"
+            if SESSION_MAX_TURNS and self.turns > SESSION_MAX_TURNS:  # per-session turn cap
+                msg = f"max turns per session ({SESSION_MAX_TURNS}) reached - /new or NECRO_SESSION_MAX_TURNS"
                 self.add("info", msg)
                 if chat_id is not None:
                     self.tg.send(chat_id, msg)
                 return
-            for i in range(MAX_STEPS):
+            for i in range(TURN_MAX_STEPS):
                 if self.step != i + 1:
                     self.step = i + 1
                     self.dirty = True  # step counter in the header must refresh
@@ -71,8 +71,8 @@ class TurnMixin:
                         while self.turns <= t_turns + 1 and time.monotonic() < deadline:
                             time.sleep(0.01)
                     break  # the old turn is done - its finally must not clobber the new turn
-                if TURN_TIMEOUT and time.monotonic() - t0 > TURN_TIMEOUT:  # wall-clock safety break
-                    raise TimeoutError(f"turn timeout after {TURN_TIMEOUT} s (NECRO_TURN_TIMEOUT)")
+                if TURN_TIMEOUT_S and time.monotonic() - t0 > TURN_TIMEOUT_S:  # wall-clock safety break
+                    raise TimeoutError(f"turn timeout after {TURN_TIMEOUT_S} s (NECRO_TURN_TIMEOUT_S)")
                 if REMOTE:  # the peer tool only exists in remote mode - don't glob
                     peer_refresh()  # /tmp + liveness-check siblings for a tool that is not registered
                 self.agent.compact()
@@ -124,8 +124,8 @@ class TurnMixin:
                 self.db_sync()
                 if chat_id is not None and i % TG_MILESTONE_EVERY == TG_MILESTONE_EVERY - 1:  # progress milestone
                     tg_milestone += 1
-                    self.tg.send(chat_id, f"⏳ milestone {tg_milestone}: step {i + 1}/{MAX_STEPS}")
-            self.add("info", f"max steps ({MAX_STEPS}) reached")
+                    self.tg.send(chat_id, f"⏳ milestone {tg_milestone}: step {i + 1}/{TURN_MAX_STEPS}")
+            self.add("info", f"max steps ({TURN_MAX_STEPS}) reached")
         except Exception as e:
             if self.stop.is_set():
                 # a watchdog timeout sets stop too - tell them apart so the

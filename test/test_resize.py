@@ -5,6 +5,7 @@ import os
 import tempfile
 
 import pytest
+from modules.ui import view as view_mod
 
 
 @pytest.fixture
@@ -17,7 +18,7 @@ def env(tmp_path, monkeypatch):
 
 def _draw(necro, app, monkeypatch, w, h):
     """One full draw at terminal size (w, h); returns the written bytes."""
-    monkeypatch.setattr(necro.shutil, "get_terminal_size", lambda *a: os.terminal_size((w, h)))
+    monkeypatch.setattr(view_mod.shutil, "get_terminal_size", lambda *a: os.terminal_size((w, h)))
     out = []
     monkeypatch.setattr(necro.os, "write", lambda fd, data: out.append(data))
     app.dirty = True

@@ -132,54 +132,66 @@ def run_grep(pattern, path=".", stop=None):
         return f"{o}\n[timeout after {GREP_TIMEOUT} s]".strip() if o else f"[timeout after {GREP_TIMEOUT} s]"
     return o or f"no matches (exit {p.returncode})"
 def read_file(path, offset=1, limit=0, stop=None):
-    """Read a file with 1-based offset/limit; 20k-char cap with a continuation
-    marker. the fast path (offset=1, no limit) cuts at a line boundary so the
-    continuation offset points to the NEXT full line, not into a partial one.
-    The read itself is capped, so a stop check at entry is enough (a chunked
-    reader would be a rewrite without a latency win)."""
+    """Read a file with 1-based offset/limit; CONTENT_CAP chars with a continuation
+    marker. Both paths read BOUNDED: only the requested lines (plus one probe line)
+    are touched, so a 2 GB log file or a venv cannot exhaust memory. The model
+    chooses offset/limit, i.e. these are untrusted values."""
     if stop_hit(stop):
         return "[aborted]"
     p = Path(path).expanduser()
     off, lim = max(1, int(offset or 1)), max(0, int(limit or 0))
-    if off == 1 and not lim:  # fast path: only the first CONTENT_CAP chars are shown anyway,
-        with p.open(errors="replace") as f:  # so a huge file (log dump, venv)
-            t = f.read(CONTENT_CAP)  # is not fully loaded into memory
-        if len(t) >= CONTENT_CAP:
-            # only a file with MORE content than the cap is truncated: a file of
-            # exactly CONTENT_CAP chars would be reported truncated with
+    with p.open(errors="replace") as f:
+        if off == 1 and not lim:
+            t = f.read(CONTENT_CAP)  # bounded: a huge file is never fully loaded
+            if len(t) < CONTENT_CAP:
+                return t
+            # only a file with MORE content is truncated: a file of exactly
+            # CONTENT_CAP chars would otherwise be reported truncated with
             # 'continue with offset 1' - an endless re-read of the same content
             total = p.stat().st_size
-            if total > len(t):
-                i = t.rfind("\n")
-                if i > 0:
-                    t, nxt = t[:i], t[:i].count("\n") + 2  # next FULL line after the cut
-                else:
-                    nxt = 1  # no complete line in the first CONTENT_CAP chars
-                t += f"\n…[truncated, {total} bytes total - continue with offset {nxt}]"
-        return t
-    t = p.read_text(errors="replace")
-    if stop_hit(stop):  # a large file may take a moment - the turn was aborted meanwhile
+            if total <= len(t):
+                return t
+            i = t.rfind("\n")
+            if i > 0:
+                t, nxt = t[:i], t[:i].count("\n") + 2  # next FULL line after the cut
+            else:
+                nxt = 1  # no complete line in the first CONTENT_CAP chars
+            return t + f"\n…[truncated, {total} bytes total - continue with offset {nxt}]"
+        sel, chars, more = [], 0, False
+        for i, line in enumerate(f):
+            if i < off - 1:
+                continue
+            if lim and i > off - 1 + lim - 1:  # one line past the request: "is there more?"
+                more = True
+                break
+            chars += len(line)
+            if chars > CONTENT_CAP:  # the char cap wins over an oversized limit
+                break
+            sel.append(line.rstrip("\n"))
+    if stop_hit(stop):  # the lines are cheap, but the turn may have been aborted
         return "[aborted]"
-    lines = t.split("\n")
-    if off > len(lines):
-        return f"error: offset {off} beyond EOF ({len(lines)} lines)"
-    sel = lines[off - 1: off - 1 + lim if lim else None]
+    if not sel:
+        return f"error: offset {off} beyond EOF"
     body = "\n".join(sel)
-    if len(body) > CONTENT_CAP:
-        cut = body[:CONTENT_CAP]
-        shown = cut.count("\n") + (not cut.endswith("\n"))
-        body = cut + "\n…[truncated]"
-    else:
-        shown = len(sel)
-    return f"[lines {off}-{off + shown - 1} of {len(lines)}]\n" + body
-def _atomic_write(p, text):
+    end_line = off + len(sel) - 1
+    head = f"[lines {off}-{end_line}" + ("+, more follows]" if more or chars > CONTENT_CAP else "]")
+    return head + "\n" + body
+
+
+def atomic_write(p, text, mode=None):
     """Write via a temp file + rename: a crash mid-write cannot corrupt the target.
+
     The tmp name is unique per thread (pid + thread id) - a leftover .tmp of a
-    dead thread must not be mistaken for this write's temp file."""
+    dead thread must not be mistaken for this write's temp file.
+    mode: explicit permissions (e.g. 0o600 for a file that carries a secret);
+    default = keep the mode of an existing target (a fresh tmp file would
+    otherwise reset it to umask 644)."""
     tmp = p.parent / f"{p.name}.{os.getpid()}-{threading.get_ident()}.tmp"
     try:
         tmp.write_text(text)
-        if p.exists():  # preserve existing mode (e.g. u+x) - a fresh tmp file would reset it to umask 644
+        if mode is not None:
+            os.chmod(tmp, mode)
+        elif p.exists():  # preserve the mode (e.g. u+x)
             os.chmod(tmp, stat.S_IMODE(p.stat().st_mode))
         os.replace(tmp, p)
     except OSError:
@@ -199,7 +211,7 @@ def write_file(path, content, stop=None):
         cur = cur.parent
     p.parent.mkdir(parents=True, exist_ok=True)
     with file_lock(p):  # flock serializes inter- AND intra-process; one lock layer
-        _atomic_write(p, content)
+        atomic_write(p, content)
     return f"wrote {len(content)} chars to {p}"
 def edit_file(path, old, new):
     if not old:
@@ -211,5 +223,58 @@ def edit_file(path, old, new):
         s = p.read_text(errors="replace")
         if (k := s.count(old)) != 1:
             return f"error: old text found {k}x (exactly 1 required)"
-        _atomic_write(p, s.replace(old, new))
+        atomic_write(p, s.replace(old, new))
     return diff_view(s, old, new)
+
+
+# ---- look: image into the model context -----------------------------------
+# Supported: what a llama.cpp mmproj typically handles. Anything else is a clear
+# error instead of a request the server cannot parse.
+LOOK_MAX_BYTES = 8 * 1024 * 1024  # hard cap, checked BEFORE the read (no 200 MB read)
+_MAGIC = ((b"\xff\xd8\xff", "image/jpeg", "jpeg"),
+          (b"\x89PNG\r\n\x1a\n", "image/png", "png"))
+def _image_kind(head):
+    """(mime, short type) from the first bytes, or (None, None) when unsupported.
+    WebP carries 'RIFF' at 0 and 'WEBP' at 8 - checked separately because the
+    4-byte prefix alone is not unique."""
+    for magic, mime, short in _MAGIC:
+        if head.startswith(magic):
+            return mime, short
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp", "webp"
+    return None, None
+def run_look(path):
+    """Read an image file and return (text_line, base64, mime).
+    The text line is what the model and the UI see; the base64 is handed to the
+    caller for the one-shot image part. On any problem: (error string, None, None),
+    same 'error:' convention as the other tools."""
+    import base64
+    if not path:
+        return "error: look: missing 'path'", None, None
+    p = Path(path).expanduser()
+    try:
+        if p.is_dir():
+            return f"error: look: {p} is a directory", None, None
+        if not p.exists():
+            return f"error: look: no such file: {p}", None, None
+        if not p.is_file():
+            return f"error: look: not a regular file: {p}", None, None
+        size = p.stat().st_size  # size first: never read a huge file just to reject it
+    except OSError as e:
+        return f"error: look: {p}: {e.strerror or e}", None, None
+    if size == 0:
+        return f"error: look: {p} is empty", None, None
+    if size > LOOK_MAX_BYTES:
+        return (f"error: look: {p} is {size // 1024} KB, limit is "
+                f"{LOOK_MAX_BYTES // (1024 * 1024)} MB", None, None)
+    try:
+        with p.open("rb") as f:
+            data = f.read()
+    except OSError as e:
+        return f"error: look: cannot read {p}: {e.strerror or e}", None, None
+    mime, short = _image_kind(data[:12])
+    if mime is None:
+        return (f"error: look: {p} is not JPEG, PNG or WebP "
+                "(GIF/BMP are not supported)", None, None)
+    text_line = f"image: {p} ({short}, {max(1, size // 1024)} KB)"
+    return text_line, base64.b64encode(data).decode("ascii"), mime

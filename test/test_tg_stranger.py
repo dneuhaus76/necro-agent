@@ -159,7 +159,7 @@ def test_help_shows_reference():
     blocks = []
     app.add = lambda kind, text: blocks.append((kind, text))
     app.submit("/help")
-    assert blocks == [("info", necro.TUI_HELP)]
+    assert blocks == [("info", necro.HELP_TUI)]
 
 
 def test_help_in_tab_completion():

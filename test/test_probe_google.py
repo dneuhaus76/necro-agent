@@ -52,7 +52,7 @@ def _patch(monkeypatch, *responses):
 
 def test_native_path_keeps_version_prefix(monkeypatch):
     conns = _patch(monkeypatch, (200, NATIVE))
-    info = probe._google_model_info("gemini-3.5-flash-lite", 8192, "KEY")
+    info = probe._google_model_info("https://x/", "gemini-3.5-flash-lite", 8192, "KEY")
     assert conns[0].calls[0][1] == "/v1beta/models/gemini-3.5-flash-lite"
     assert info["ctx"] == 1048576
     assert info["status"] == "hosted (3.5-flash-lite-07-2026)"
@@ -63,13 +63,13 @@ def test_native_path_keeps_version_prefix(monkeypatch):
 def test_model_id_prefixes_are_stripped(monkeypatch):
     for name in ("models/gemini-3.5-flash-lite", "google/gemini-3.5-flash-lite"):
         conns = _patch(monkeypatch, (200, NATIVE))
-        probe._google_model_info(name, 8192, "KEY")
+        probe._google_model_info("https://x/", name, 8192, "KEY")
         assert conns[0].calls[0][1] == "/v1beta/models/gemini-3.5-flash-lite"
 
 
 def test_key_travels_in_header_not_in_url(monkeypatch):
     conns = _patch(monkeypatch, (200, NATIVE))
-    probe._google_model_info("gemini-3.5-flash-lite", 8192, "SECRET")
+    probe._google_model_info("https://x/", "gemini-3.5-flash-lite", 8192, "SECRET")
     method, path, headers = conns[0].calls[0]
     assert "SECRET" not in path and "key=" not in path
     assert headers["x-goog-api-key"] == "SECRET"
@@ -77,7 +77,7 @@ def test_key_travels_in_header_not_in_url(monkeypatch):
 
 def test_auth_error_falls_back_to_bearer(monkeypatch):
     conns = _patch(monkeypatch, (401, {"error": "no key"}), (200, NATIVE))
-    info = probe._google_model_info("gemini-3.5-flash-lite", 8192, "OAUTH")
+    info = probe._google_model_info("https://x/", "gemini-3.5-flash-lite", 8192, "OAUTH")
     assert len(conns) == 2
     assert conns[1].calls[0][2]["Authorization"] == "Bearer OAUTH"
     assert info["ctx"] == 1048576
@@ -85,7 +85,7 @@ def test_auth_error_falls_back_to_bearer(monkeypatch):
 
 def test_unknown_model_reports_the_failed_lookup(monkeypatch):
     _patch(monkeypatch, (404, {"error": "not found"}))
-    assert probe._google_model_info("nope", 8192, "KEY") is None
+    assert probe._google_model_info("https://x/", "nope", 8192, "KEY") is None
     info = probe.fetch_model_info(BASE, "nope", 8192, "KEY")
     assert info["status"] == "hosted - native API lookup failed"
     assert info["ctx"] == 8192  # configured fallback kept

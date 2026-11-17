@@ -5,8 +5,11 @@ import os
 import time
 from collections import Counter
 from urllib.parse import urlparse
+
+from modules.core import providers
 def from_env(v, base):
-    """NECRO_SWARM 'model=url;model=url' -> [{url, model}] (empty url = base)."""
+    """NECRO_SWARM 'model=url;model=url' -> [{url, model}] (empty url = base).
+    No provider field: the env form stays short, the hostname decides (or cfg 'swarm')."""
     out = []
     for part in v.split(";"):
         if not part.strip():
@@ -22,7 +25,8 @@ def parse(cfg, env, base, model):
     if env is not None:
         agents = from_env(env, base)
     else:
-        agents = [{"url": a.get("url", base), "model": a["model"]}
+        agents = [{"url": a.get("url", base), "model": a["model"],
+                   "provider": providers.name_of(a.get("provider"))}
                   for a in (cfg.get("swarm") or []) if isinstance(a, dict) and a.get("model")]
     return [a for a in agents if not (a["url"] == base and a["model"] == model)]
 def resolve(cfg, swarm_env, remote, base, model):
@@ -68,18 +72,29 @@ CHECK_ATTEMPTS = 2  # one GET /models can fail transiently - retry before markin
                      #  check interval - a 3rd attempt would push the full pass to 31.5 s,
                      #  exceeding the interval and doubling the effective status latency)
 CHECK_RETRY_DELAY = 0.5  # s between attempts (worst case per agent: ~7 s, background thread)
+PROBE_PATHS = ("/models", "/api/info")  # /models = OpenAI-compatible, /api/info = BigMoeOnEdge
 def _probe(url, token):
-    """One availability ping (GET /models, 3 s timeout); raises on any failure."""
+    """One availability ping (GET /models, 3 s timeout); raises on any failure.
+    Tries every known info endpoint: runners differ (llama.cpp serves /models,
+    BigMoeOnEdge serves /api/info) - one 200 is enough to call the agent up."""
     import http.client
     u = urlparse(url)
     cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
-    c = cls(u.hostname, u.port, timeout=3)
+    c = cls(u.hostname, u.port, timeout=2)  # 2 s per endpoint: 2 endpoints * 2 attempts must fit the 30 s pass
     try:
         h = {}
         if token:
             h["Authorization"] = f"Bearer {token}"
-        c.request("GET", u.path.rstrip("/") + "/models", headers=h)  # {} ok; None breaks py3.13 http.client
-        c.getresponse().read()
+        for p in PROBE_PATHS:
+            try:
+                c.request("GET", u.path.rstrip("/") + p, headers=h)  # {} ok; None breaks py3.13 http.client
+                r = c.getresponse()
+                r.read()
+                if 200 <= r.status < 300:
+                    return  # one answered endpoint is enough
+            except Exception:
+                continue  # this endpoint failed - try the next one
+        raise ConnectionError(f"no info endpoint answered on {url}")
     finally:
         c.close()  # exception path (bad JSON, partial response) must not leak the socket (F3)
 def port_open(url, timeout=3):

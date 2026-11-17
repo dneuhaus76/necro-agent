@@ -15,7 +15,7 @@ plus two modules: `modules/ui/keys.py` (input handling, mixin) and
 ## Screen Layout
 
 ```
-row 1:  header 1  (skull + version | model · think:… · baseurl | step counter)
+row 1:  header 1  (skull + version | model · think:… · base_url | step counter)
 row 2:  header 2  (/help hint)
 row 3:  ─ separator ─
 rows 4..ch:  content (blocks, scrollable viewport)
@@ -30,18 +30,24 @@ y+4+n:  status line (left: ctx % / window; right: scroll + swarm on/off)
 `ch` (content height) = `H - 9 - (n_in - 1)` – wrapped input lines take room
 from the content area.
 
+Header 1 shows `think:<state>` from the server, not from the toggle: the
+probe reads the launch args (`--reasoning`, `--reasoning-budget`,
+`--reasoning-effort`). A server that disables reasoning wins, because it
+decides what really happens. When the `^t` toggle and the server disagree,
+both are shown – `think:on/off` means requested `on`, server `off`.
+
 ## Blocks
 
 `App.blocks` is an ordered list of `Block(kind, text, color)`. Kinds:
 
 | Kind | Rendering |
 |---|---|
-| `user` | `›` prefix, CHOCOLATE; `[telegram:…]` blocks in TELEGRAM color; peer lines (`💀 peer`) in EMBLEM without the `›` |
-| `agent` | Markdown (`md_lines`), GREY |
+| `user` | `›` prefix, USER; `[telegram:…]` blocks in TELEGRAM color; peer lines (`💀 peer`) in ACCENT without the `›` |
+| `agent` | Markdown (`md_lines`), TEXT |
 | `think` | dim, `┊ ` gutter, italic; hidden behind the ^T toggle (collapsed to one `🧠 thinking…` line) |
 | `tool` | emoji head (cfg `tool_emoji`, default `›`); body behind the ^O toggle; edit diffs flush left with `-`/`+` styling; `recall` gets a compact italic `recall…` head |
-| `pre` | preformatted (emblem), no wrap, EMBLEM |
-| `info` / `error` | DARK / RED (or a per-block color override) |
+| `pre` | preformatted (emblem), no wrap, ACCENT |
+| `info` / `error` | MUTED / ERROR (or a per-block color override) |
 
 Blocks are rendered with a **cache key** `(width, len(text), toggles, color)`
 – unchanged blocks skip re-rendering.
@@ -98,11 +104,34 @@ selection and scrollback survive.
 ## Palette (modules/core/palette.py)
 
 Single Source of Truth for all colors (256-color SGR) and tool emojis.
-`resolve(overrides)` applies cfg `colors` (role -> 0-255) at startup and
-rebuilds the SGR constants; the named colors (`CHOCOLATE`, `GREY`, `DARK`,
-`RED`, `TELEGRAM`, `EMBLEM`, …) are imported **after** `set_palette`, so they
-reflect the overrides. Roles are validated against `ROLES` in
-`modules/core/config.py`.
+**One role = one part of the screen** — the role name says what it colors, so
+`cfg 'colors'` is readable. The help prints itself:
+
+```
+$ ./necro.py --colors
+cfg 'colors' = role -> 256-color index (0-255). Defaults:
+  user         216  user text, input line, prompt marker
+  text         244  agent answer text (markdown body)
+  accent       106  header title, emblem, important tool heads, online swarm
+  muted        240  think/tool detail lines, separators, secondary text
+  error        167  error blocks and error text
+  telegram      38  telegram info line
+  panel_bg     236  background of header, status line and code blocks
+  panel_text   255  header and cwd text on the panel
+  code_text    252  text inside code blocks
+  edit_text    232  text on edit diff lines
+  edit_del_bg  216  background of removed lines in an edit diff
+  edit_add_bg  106  background of added lines in an edit diff
+```
+
+Same table without a terminal: `python3 -m modules.core.palette`.
+
+`resolve(overrides)` applies cfg `colors` (role -> index 0-255) at startup and
+rebuilds the SGR constants. `set_palette` runs **before** the named constants
+(`USER`, `TEXT`, `ACCENT`, `MUTED`, `ERROR`, `TELEGRAM`) are imported, so they
+reflect the overrides. Roles and values are validated in
+`modules/core/config.py`; `_doc_colors` in `necro.cfg` carries the same table
+as a comment, so the help sits next to the setting.
 
 ## Key Reference (shown by `/help`)
 
@@ -110,9 +139,17 @@ reflect the overrides. Roles are validated against `ROLES` in
 ^t thinking · ^o tools · ^x edits
 ↑/↓ history · PgUp/PgDn scroll · Alt+Enter newline
 TAB complete (/commands) · Esc abort / close menu · ^c clear (idle) / abort (busy)
-/help · /status · /model [name] · /cd <dir> · /clear|/new · /review /test /plan · /quit
+/help · /status · /model [name] · /compact · /tgcommands · /cd <dir> · /clear|/new
+/review /test /plan · /quit
 ```
 
 `/help` and `/status` are read-only: they answer immediately, even while a turn
 runs. Everything else (and every prompt) is queued and picked up at the next
 step boundary; `/quit` aborts a running turn before it exits.
+
+`/compact` shrinks the context on demand: it runs the automatic compaction with
+`force=True` (no 80 % threshold) and reports the result as an info block. It
+makes one LLM call, so it runs in a background thread - the draw loop must never
+wait for a completion. Below a few messages there is no head to summarise; the
+command then says so instead of spending a call. The same function
+(`App.compact_command`) serves Telegram.

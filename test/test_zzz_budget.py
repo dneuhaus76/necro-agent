@@ -23,7 +23,12 @@ import time
 # kleinere Suite; das Gate macht Drift sichtbar, es ist kein Naturgesetz.
 # 6.0 -> 8.0: 283 Tests, die 6.0 wurden auf dieser Maschine real erreicht
 # (6.03/5.99 s) - ein Gate, das im Normalfall schon anschlaegt, ist flaky.
-BUDGET_S = 8.0
+# 8.0 -> 12.0: 421 Tests (1.5x). Vorher war die Suite scheinbar bei 55-90 s:
+# nicht die Tests, sondern Leichen - jeder PeerAPI-Test liess Accept-Loop +
+# Worker laufen, jeder TelegramBot pollte das echte api.telegram.org (~80
+# Threads, CPU-Loop 9x langsamer). Mit test/conftest.py (close_all + kein
+# TG-Poll) sind es wieder ~8.5 s echte Rechenzeit.
+BUDGET_S = 12.0
 # Suite-Start beim Import (Collection) – vor dem ersten Test.
 _T0 = time.monotonic()
 

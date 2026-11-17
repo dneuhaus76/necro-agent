@@ -139,7 +139,7 @@ alternative is a fast/non-thinking model).
 
 - **Tiny harness** — one main script plus a few modules, Python 3 standard library only, no dependencies to install
 - **Automatic context size** — NECRO queries the inference server for the model's current context window (`--ctx-size`) at startup; no manual `ctx_window` needed. On a slow server the window is not the real limit — prefill time is: `ctx_models` caps the context per model, e.g. `{"Qwen3-8": 16000}` (separator/case tolerant, `"*"` = default); the active entry is shown as `(cap …)` in the status line
-- **Telegram bot** — drive a session from your phone: send prompts, `/stop`, `/new`, `/status`, `/help`; chat-ID whitelist keeps strangers from spending your tokens
+- **Telegram bot** — drive a session from your phone: send prompts, `/stop`, `/new`, `/compact`, `/model`, `/status`, `/help`; chat-ID whitelist keeps strangers from spending your tokens
 - **Peer & Swarm** — NECRO instances talk to each other: a fleet of containers can work on the same project in parallel — see above
 - **Sub-agents** — `delegate` (hand a task to another model) and `consult` (bot-to-bot dialogue with follow-up questions)
 - **Safety breaks for unattended runs** — per-turn wall-clock timeout and per-session turn cap, so a self-looping agent cannot run forever
@@ -149,13 +149,13 @@ alternative is a fast/non-thinking model).
 
 `necro.cfg` (JSON) is read from the working directory, then from the script directory.
 
-_Enter the correct baseurl of the hosts if they are remote _
+_Enter the correct `base_url` of the hosts if they are remote._
 
 Example:
 
 ```json
 {
-  "baseurl": "http://127.0.0.1:8080/v1",
+  "base_url": "http://127.0.0.1:8080/v1",
   "model": "Ornith1.5-35B",
   "swarm": [
     {
@@ -171,30 +171,29 @@ Example:
   "show_thinking": false,
   "show_tools": false,
   "show_edits": true,
-  "max_steps": 150,
-  "max_turns": 200,
+  "turn_max_steps": 150,
+  "session_max_turns": 200,
   "remote": true,
   "peer_host": "0.0.0.0",
-  "peer_turn_timeout": 3600,
+  "peer_turn_timeout_s": 3600,
   "telegram_chats": "[chat-id]",
-  "turn_timeout": 14400,
-  "step_timeout": 900,
-  "_doc_colors": {
-    "_note": "role -> 0-255",
-    "edit-old": 216,
-    "agent": 106,
-    "user": 216,
-    "grey": 250,
-    "dark": 240,
-    "darker": 232,
-    "red": 167,
-    "panel-bg": 236,
-    "header-fg": 255,
-    "code-fg": 252,
-    "edit-fg": 232,
-    "telegram": 38,
-    "edit-new": 106
-  },
+  "turn_timeout_s": 14400,
+  "step_timeout_s": 900,
+  "_doc_colors": [
+    "role index - purpose (copy a role into 'colors' to override it)",
+    "user 216 - user text, input line, prompt marker",
+    "text 244 - agent answer text (markdown body)",
+    "accent 106 - header title, emblem, important tool heads, online swarm",
+    "muted 240 - think/tool detail lines, separators, secondary text",
+    "error 167 - error blocks and error text",
+    "telegram 38 - telegram info line",
+    "panel_bg 236 - background of header, status line and code blocks",
+    "panel_text 255 - header and cwd text on the panel",
+    "code_text 252 - text inside code blocks",
+    "edit_text 232 - text on edit diff lines",
+    "edit_del_bg 216 - background of removed lines in an edit diff",
+    "edit_add_bg 106 - background of added lines in an edit diff"
+  ],
   "_doc_tool_emoji": {
     "_note": "tool -> emoji",
     "bash": "🦴",

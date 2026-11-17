@@ -44,9 +44,9 @@ def test_validate_empty():
 
 
 def test_validate_type_error():
-    """validate({'baseurl': 42}) reports a type mismatch."""
+    """validate({'base_url': 42}) reports a type mismatch."""
     from modules.core.config import validate
-    issues = validate({"baseurl": 42})
+    issues = validate({"base_url": 42})
     assert len(issues) >= 1
     assert "expects str" in issues[0] or "got int" in issues[0]
 
@@ -75,14 +75,14 @@ def test_tool_emoji_defaults_ssot():
 def test_peer_turn_timeout_ssot(monkeypatch):
     """peer_turn_timeout: env wins over cfg, both win over the 600 s default."""
     import necro
-    monkeypatch.delenv("NECRO_PEER_TURN_TIMEOUT", raising=False)
-    monkeypatch.setitem(necro.CFG, "peer_turn_timeout", 1234)
-    assert necro._int("NECRO_PEER_TURN_TIMEOUT", "peer_turn_timeout", 600) == 1234
-    monkeypatch.setenv("NECRO_PEER_TURN_TIMEOUT", "777")
-    assert necro._int("NECRO_PEER_TURN_TIMEOUT", "peer_turn_timeout", 600) == 777
-    monkeypatch.delenv("NECRO_PEER_TURN_TIMEOUT")
-    monkeypatch.delitem(necro.CFG, "peer_turn_timeout")
-    assert necro._int("NECRO_PEER_TURN_TIMEOUT", "peer_turn_timeout", 600) == 600
+    monkeypatch.delenv("NECRO_PEER_TURN_TIMEOUT_S", raising=False)
+    monkeypatch.setitem(necro.CFG, "peer_turn_timeout_s", 1234)
+    assert necro._int("NECRO_PEER_TURN_TIMEOUT_S", "peer_turn_timeout_s", 600) == 1234
+    monkeypatch.setenv("NECRO_PEER_TURN_TIMEOUT_S", "777")
+    assert necro._int("NECRO_PEER_TURN_TIMEOUT_S", "peer_turn_timeout_s", 600) == 777
+    monkeypatch.delenv("NECRO_PEER_TURN_TIMEOUT_S")
+    monkeypatch.delitem(necro.CFG, "peer_turn_timeout_s")
+    assert necro._int("NECRO_PEER_TURN_TIMEOUT_S", "peer_turn_timeout_s", 600) == 600
 
 
 def test_thinking_line_emoji_ssot(monkeypatch):

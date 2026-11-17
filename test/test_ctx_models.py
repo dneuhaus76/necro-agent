@@ -56,8 +56,8 @@ def test_app_starts_with_the_cap(necro_mod, monkeypatch):
     """The cap must be live before the first probe answer arrives."""
     monkeypatch.setattr(necro_mod, "CTX_MODELS", {"Qwen3-8": 16000})
     monkeypatch.setattr(necro_mod, "MODEL", "Qwen3-8")
-    monkeypatch.setattr(necro_mod, "CTX", 131072)
-    assert necro_mod.ctx_cap(necro_mod.MODEL, necro_mod.CTX) == 16000
+    monkeypatch.setattr(necro_mod, "CTX_FALLBACK", 131072)
+    assert necro_mod.ctx_cap(necro_mod.MODEL, necro_mod.CTX_FALLBACK) == 16000
 
 
 def test_separator_and_case_variants_match(necro_mod, monkeypatch):

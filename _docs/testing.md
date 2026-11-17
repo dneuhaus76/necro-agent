@@ -13,12 +13,18 @@ python3 -m pytest test/ -x -q
 
 - The suite is designed to run in seconds, not minutes.
 - `test_smoke.py` is the entry gate: every module must be importable, total
-  runtime < 8 s (gate: `test/test_zzz_budget.py`).
+  runtime < 12 s (gate: `test/test_zzz_budget.py`, 424 tests).
 
 ## Conventions
 
 - **One file per feature/bug** — the file name says what it covers
   (`test_peer_queue.py`, `test_tg_stranger.py`, ...).
+- **No background services may survive a test** (`test/conftest.py`): an
+  autouse fixture calls `api.close_all()` after every test, so a `PeerAPI` a
+  test built is stopped (accept loop + worker + discovery file). Another
+  autouse fixture disables `TelegramBot._loop` - a test must never long-poll
+  the real Bot API, it would take the updates away from the live NECRO bot
+  (Telegram answers 409 to the second poller).
 - **No shared state:** tests use temp dirs and temp DB files
   (`NECRO_DB`, `NECRO_PEER_DIR` env overrides), so they never touch
   `data/necro.db` or a real `/tmp/necro`.
@@ -33,9 +39,12 @@ python3 -m pytest test/ -x -q
 | Area | Files |
 |---|---|
 | Smoke / imports | `test_smoke.py` |
+| Palette: color values + role table | `test_palette.py` |
+| Tool boundary + bounded file reads + atomic_write | `test_tool_boundary.py` |
 | Peer: discovery & status | `test_peer_discovery.py`, `test_peer_discovery_model.py`, `test_peer_status.py`, `test_peering.py`, `test_auth_token.py` |
 | Peer: queue & busy | `test_peer_queue.py`, `test_peer_busy.py` |
-| Peer: multi-hop & claims | `test_peer_multihop.py`, `test_peer_claims.py`, `test_zzz_budget.py` |
+| Peer: multi-hop & claims | `test_peer_multihop.py`, `test_peer_claims.py`, `test_peer_close.py` |
+| Model probe | `test_probe_reasoning.py`, `test_probe_google.py`, `test_providers.py` |
 | Peer: context, dedup, abort | `test_peer_context.py`, `test_peer_dedup.py`, `test_peer_abort_reason.py` |
 | Sub-agents | `test_subagent_delegate.py`, `test_consult_trim.py`, `test_swarm_check.py`, `test_swarm_offline.py` |
 | Telegram | `test_tg_stranger.py`, `test_tg_busy.py`, `test_tg_rich.py` |

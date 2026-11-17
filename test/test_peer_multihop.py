@@ -15,9 +15,9 @@ def _fake_tool(name):
 
 
 def test_peer_turn_tools_matrix(monkeypatch):
-    """peer tool only while hops < PEER_MAX_HOPS; delegate/consult only when
-    PEER_TURN_SUBAGENTS is on. (TOOLS extended with the peer/swarm tools that
-    REMOTE/SWARM would register at startup.)"""
+    """peer tool only while hops < PEER_MAX_HOPS; consult always; delegate only
+    when PEER_TURN_SUBAGENTS is on. (TOOLS extended with the peer/swarm tools
+    that REMOTE/SWARM would register at startup.)"""
     import necro
     monkeypatch.setattr(necro, "TOOLS", necro.TOOLS + [necro.PEER_TOOL, _fake_tool("delegate"), _fake_tool("consult")])
 
@@ -27,11 +27,22 @@ def test_peer_turn_tools_matrix(monkeypatch):
     monkeypatch.setattr(necro, "PEER_MAX_HOPS", 2)
     monkeypatch.setattr(necro, "PEER_TURN_SUBAGENTS", True)
     assert "peer" in names(1) and "delegate" in names(1) and "consult" in names(1)  # hop 1: full set
-    assert "peer" not in names(2) and "delegate" in names(2)  # hop 2: limit reached, subagents stay
+    assert "peer" not in names(2) and "delegate" in names(2)  # hop 2: limit reached, delegate stays
     monkeypatch.setattr(necro, "PEER_TURN_SUBAGENTS", False)
-    assert "peer" in names(1) and "delegate" not in names(1)  # subagents off
+    assert "peer" in names(1) and "delegate" not in names(1)  # delegate off
+    assert "consult" in names(1)  # consult always: bounded, no tools, cheap
     monkeypatch.setattr(necro, "PEER_MAX_HOPS", 1)
     assert "peer" not in names(1)  # limit 1 = old behaviour (no multi-hop)
+
+
+def test_peer_turn_delegate_default_off(monkeypatch):
+    """default: a peer turn gets no delegate (no third server while the caller
+    blocks), but consult stays available."""
+    import necro
+    monkeypatch.undo()  # the module value as shipped, not a test override
+    monkeypatch.setattr(necro, "TOOLS", necro.TOOLS + [necro.PEER_TOOL, _fake_tool("delegate"), _fake_tool("consult")])
+    names = {t["function"]["name"] for t in necro.peer_turn_tools(1)}
+    assert "delegate" not in names and "consult" in names
 
 
 def test_peer_refresh_shows_busy_status(monkeypatch):
@@ -125,9 +136,9 @@ def test_worker_receives_hops_and_state(api):
 
 def test_budget_caps_watchdog(api):
     """a small chain budget aborts a hung peer turn after the budget, not after
-    the full peer_turn_timeout (the whole chain shares one wall-clock budget)."""
+    the full peer_turn_timeout_s (the whole chain shares one wall-clock budget)."""
     api_mod, p, app = api
-    p.turn_timeout = 30  # large own timeout - the budget must be what fires
+    p.peer_turn_timeout = 30  # large own timeout - the budget must be what fires
 
     def hung_turn(chat_id=None, done=None):
         app.busy = True
@@ -168,7 +179,7 @@ def test_peer_prompt_sends_hops_and_budget(api, monkeypatch):
 
 def test_peer_prompt_direct_call_omits_budget(api, monkeypatch):
     """a direct call (hops=1, no budget) sends hops=1 and no budget_left key -
-    the receiver falls back to its own peer_turn_timeout."""
+    the receiver falls back to its own peer_turn_timeout_s."""
     api_mod, p, app = api
     captured = {}
 
@@ -188,7 +199,7 @@ def test_peer_prompt_timeout_capped_by_budget(api, monkeypatch):
     not the peer's full configured timeout."""
     api_mod, p, app = api
     d = json.loads(p.path.read_text())
-    d["peer_turn_timeout"] = 1234
+    d["peer_turn_timeout_s"] = 1234
     p.path.write_text(json.dumps(d))
     captured = {}
 
@@ -222,7 +233,8 @@ def test_tool_peer_filters_frm_and_routes_idle(api, monkeypatch):
 
     monkeypatch.setattr(api_mod, "peer_prompt", fake_prompt)
     monkeypatch.setattr(api_mod, "peer_health", lambda x, timeout=2: (False, None))
-    ag = agent_mod.Agent(app, "http://x/v1", 5, [], [], [], {}, "", "")
+    # peer_max_hops=2: this test IS the multi-hop case (a peer turn calls a peer)
+    ag = agent_mod.Agent(app, "http://x/v1", 5, [], [], [], {}, "", "", peer_max_hops=2)
     # local turn: no frm filter, B busy -> idle C is picked
     assert ag._tool_peer({"task": "t"}, None) == "done"
     assert calls[-1][0] == "C" and calls[-1][1] == 1 and calls[-1][2] is None

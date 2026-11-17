@@ -33,7 +33,7 @@ def test_real_tokens_shown_as_real():
     a.last_completion_tokens = 678
     txt = a.status_text()
     assert "12'345" in txt and "65'536" in txt
-    assert "real" in txt and "geschaetzt" not in txt
+    assert "real" in txt and "estimated" not in txt
     assert "678" in txt  # last reply tokens
     assert "18.8%" in txt
 
@@ -43,14 +43,14 @@ def test_estimate_is_labelled():
     a.ctx_est = 1000
     txt = a.status_text()
     assert "1'000" in txt
-    assert "geschaetzt" in txt
+    assert "estimated" in txt
 
 
 def test_status_reports_free_space_and_state():
     a = _app()
     a.ctx_used, a.busy, a.step, a.turns = 63536, True, 3, 7
     txt = a.status_text()
-    assert "frei: 2'000 tokens" in txt
+    assert "free: 2'000 tokens" in txt
     assert "busy (step 3)" in txt and "turn 7" in txt
 
 
@@ -93,7 +93,7 @@ def test_help_answers_immediately_while_busy():
     a = _app()
     a.busy = True
     a.submit("/help")
-    assert a.blocks[-1][1] == necro.TUI_HELP
+    assert a.blocks[-1][1] == necro.HELP_TUI
     assert a._queued is False
 
 

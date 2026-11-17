@@ -10,22 +10,21 @@ def fg(role):
     return "38;5;%d" % _PAL[role]
 def bg(role):
     return "48;5;%d" % _PAL[role]
-CHOCOLATE, GREY, DARK, RED = fg("user"), fg("grey"), fg("dark"), fg("red")
+# named SGR constants, one per role that the UI code uses directly
+USER, TEXT, ACCENT, MUTED, ERROR = (fg(r) for r in ("user", "text", "accent", "muted", "error"))
 TELEGRAM = fg("telegram")  # telegram info line
-EMBLEM = fg("agent")  # faded dark green (emblem)
-_EDIT_OLD = ";" + fg("edit-fg") + ";" + bg("edit-old")  # faded text on edit - lines
-_EDIT_NEW = ";" + fg("edit-fg") + ";" + bg("edit-new")  # faded text on edit + lines
-_CODE = ";" + fg("code-fg") + ";" + bg("panel-bg")  # code block style
+_EDIT_DEL = ";" + fg("edit_text") + ";" + bg("edit_del_bg")  # text on removed lines
+_EDIT_ADD = ";" + fg("edit_text") + ";" + bg("edit_add_bg")  # text on added lines
+_CODE = ";" + fg("code_text") + ";" + bg("panel_bg")  # code block style
 def set_palette(p):
     """rebuild the SGR constants from an effective palette (cfg 'colors')."""
-    global CHOCOLATE, GREY, DARK, RED, TELEGRAM, EMBLEM, _EDIT_OLD, _EDIT_NEW, _CODE
+    global USER, TEXT, ACCENT, MUTED, ERROR, TELEGRAM, _EDIT_DEL, _EDIT_ADD, _CODE
     _PAL.update(p)
-    CHOCOLATE, GREY, DARK, RED = fg("user"), fg("grey"), fg("dark"), fg("red")
+    USER, TEXT, ACCENT, MUTED, ERROR = (fg(r) for r in ("user", "text", "accent", "muted", "error"))
     TELEGRAM = fg("telegram")
-    EMBLEM = fg("agent")
-    _EDIT_OLD = ";" + fg("edit-fg") + ";" + bg("edit-old")
-    _EDIT_NEW = ";" + fg("edit-fg") + ";" + bg("edit-new")
-    _CODE = ";" + fg("code-fg") + ";" + bg("panel-bg")
+    _EDIT_DEL = ";" + fg("edit_text") + ";" + bg("edit_del_bg")
+    _EDIT_ADD = ";" + fg("edit_text") + ";" + bg("edit_add_bg")
+    _CODE = ";" + fg("code_text") + ";" + bg("panel_bg")
 _CW = {}  # per-char width cache - cw() was the hottest function in the profile
          # (2x unicodedata lookups per char); Unicode width semantics are immutable
 def cw(ch):
@@ -82,9 +81,9 @@ def sgr(base, st):
     s = "\x1b[0;" + base
     s += ";1" * ("b" in st) + ";3" * ("i" in st) + ";4" * ("u" in st)
     s += _CODE * ("c" in st)
-    s += _EDIT_OLD * ("o" in st)  # faded dark orange (edit - lines)
-    s += _EDIT_NEW * ("g" in st)  # faded dark green (edit + lines)
-    s += (";" + fg("red")) * ("e" in st)  # error text overrides the block base color
+    s += _EDIT_DEL * ("o" in st)  # faded dark orange (edit - lines)
+    s += _EDIT_ADD * ("g" in st)  # faded dark green (edit + lines)
+    s += (";" + fg("error")) * ("e" in st)  # error text overrides the block base color
     return s + "m"
 ERR_PREFIX = "error:"
 def is_err(text):
@@ -152,7 +151,7 @@ def menu_line(items, sel, width):
             segs.append(("  ", ""))
     if off + n < len(items):
         segs.append(("›", ""))
-    return emit(segs, DARK)
+    return emit(segs, MUTED)
 def diff_view(src, old, new):
     """Numbered diff of one edit (old-file line numbers) for display and model context."""
     start = src[:src.index(old)].count("\n") + 1
@@ -249,7 +248,7 @@ def table_lines(rows, width, base):
             segs.pop()
         return emit(segs, base)
     out = [fmt(header, "b")]
-    out.append(emit([("  ".join("─" * w for w in widths).rstrip(), "")], DARK))
+    out.append(emit([("  ".join("─" * w for w in widths).rstrip(), "")], MUTED))
     out += [fmt(r, "") for r in body]
     return out
 TASK = {" ": "\u2610", "x": "\u2611"}  # "- [ ]" / "- [x]" checkboxes; a checklist marker is a symbol, not emoji
@@ -270,9 +269,9 @@ def md_lines(text, width, base):
             # bullet. The level lives in the style (h1 bold+underlined, deeper bold),
             # the accent in the user's chocolate color instead of the block grey.
             for l in wrap_segs(inline(m[2], "bu" if len(m[1]) == 1 else "b"), width):
-                out.append(emit(l, GREY))
+                out.append(emit(l, USER))  # accent, not the block grey (see comment above)
         elif re.fullmatch(r"\s*([-*_])\1{2,}\s*", ln):
-            out.append(emit([("─" * width, "")], DARK))
+            out.append(emit([("─" * width, "")], MUTED))
         elif (m := re.match(r"(\s*)([-*+]|\d+[.)])\s+(.*)", ln)):
             mark, body = None, m[3]
             if (t := re.match(r"\[([ xX])\]\s+(.*)", body) if m[2] in "-*+" else None):

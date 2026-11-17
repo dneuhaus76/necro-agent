@@ -20,8 +20,8 @@ Each NECRO instance optionally runs a **local HTTP server**
 The server binds to `127.0.0.1` by default (ephemeral port, `port=0`). For
 Docker/container setups: `peer_host=0.0.0.0` + a fixed, exposed port. The
 **master switch is `remote=true`** (cfg) / `NECRO_REMOTE` (env) — when off,
-the server is not started and the `peer` tool is not registered. `peering` /
-`NECRO_PEERING` is the narrow switch (Peer-API only, no cfg swarm).
+the server is not started and the `peer` tool is not registered. `peer_api` /
+`NECRO_PEER_API` (`peer_api`) is the narrow switch (Peer-API only, no cfg swarm).
 
 ## Discovery
 
@@ -30,7 +30,7 @@ Peers discover each other via **discovery files** in `/tmp/necro/`
 
 1. **Startup:** each instance writes its file atomically (tmp +
    `os.replace`, mode 0600 — it carries the token):
-   `{id, host, ip, port, token, peer_turn_timeout, pid, cwd, model?, url?}`.
+   `{id, host, ip, port, token, peer_turn_timeout_s, pid, cwd, model?, url?}`.
    `model`/`url` are optional (older instances lack them); they are
    refreshed after a `/model` switch so a parent never sees a stale model
    name.
@@ -77,15 +77,15 @@ When the agent invokes the `peer` tool:
    `You are sibling of [<parent id>] – don't peer back, I'm waiting for
    your final answer.`
 6. **Caller timeout:** the PEER decides how long its turn may run — its
-   discovery file carries its own `peer_turn_timeout`. The caller timeout is
-   `2 * peer_turn_timeout + 30` (queue wait + turn), capped by the remaining
+   discovery file carries its own `peer_turn_timeout_s`. The caller timeout is
+   `2 * peer_turn_timeout_s + 30` (queue wait + turn), capped by the remaining
    chain budget.
 7. **On the peer:** the task is appended as a `user` message (under the
    lock) and **enqueued** into `_peer_queue`. A worker thread drains it one
    turn at a time, in order, and waits for a running local turn to finish
    first (two turns never race on `app.messages`). A second POST no longer
    gets `409` — it blocks until the turn ran.
-8. **Watchdog:** the peer turn is capped at `min(peer_turn_timeout,
+8. **Watchdog:** the peer turn is capped at `min(peer_turn_timeout_s,
    budget_left)` — a hung turn must not hold `busy` forever. The watchdog
    marks itself (`_watchdog_fired`) so the abort reason reads "turn timeout
    (watchdog, N s)" instead of a bare "aborted".
@@ -99,7 +99,7 @@ When the agent invokes the `peer` tool:
 ## Chain Budget (multi-hop)
 
 A multi-hop chain shares **one wall-clock budget**, not one full
-`peer_turn_timeout` per hop:
+`peer_turn_timeout_s` per hop:
 
 - The chain start time (`_chain_t0`) and total budget (`_chain_budget`) are
   stored on the app by the peer-turn worker.
@@ -127,7 +127,7 @@ Peering is parent-child, not flat: a source must not address a
 Claims are **best-effort** (2 s timeout, no retry): a lost notification only
 weakens the topology hint, it never breaks the chain. Backstops:
 
-- **TTL** (`PEER_CLAIM_TTL`, derived as `max(900, turn_timeout + 600)`): a
+- **TTL** (`PEER_CLAIM_TTL`, derived as `max(900, peer_turn_timeout_s + 600)`): a
   crashed claimer cannot hold a claim forever; stale entries are cleaned in
   `peer_excluded_ids()` (called on every peer call — the natural cleanup
   point).
@@ -140,11 +140,19 @@ behind its running turn — still parent-child).
 ## Recursion Guard
 
 Peer turns use `peer_turn_tools(hops)` — the full tool list **minus**
-`delegate`, `consult`, and `peer`, **plus** `peer` again while
-`hops < PEER_MAX_HOPS` (multi-hop chains, capped) and `delegate`/`consult`
-when `PEER_TURN_SUBAGENTS` is on (default). A peer can therefore delegate to
-swarm agents and (up to the hop cap) to further peers; unbounded recursion
-is prevented by the hop cap + chain budget, not by removing the tools.
+`delegate` and `peer`, **plus** `peer` again while `hops < PEER_MAX_HOPS`
+(multi-hop chains, capped) and `delegate` when `PEER_TURN_SUBAGENTS` is on
+(default **off**: a peer that starts a third server blocks the caller for the
+whole sub-run). `consult` stays available in every peer turn — it runs no
+tools and is bounded to 4 rounds, so it is the cheap second opinion a peer
+turn usually needs. Unbounded recursion is prevented by the hop cap + chain
+budget, not by removing the tools.
+
+The cap is enforced twice. `peer_turn_tools()` only filters the **request**;
+`run_tool()` does not check the offered list, so a peer turn that emits the
+call anyway would extend the chain. `_tool_peer` therefore refuses
+`hops > peer_max_hops` with `error: peer chain limit reached` — the tool list
+is a hint, the dispatch is the guard.
 
 ## Tool Description Refresh
 
@@ -162,10 +170,10 @@ per-peer HTTP health + string rebuild — all wasted work when nothing moved).
 | `peer_host` (cfg) | `127.0.0.1` | Bind address |
 | `peer_port` (cfg) | `0` | Port (`0` = ephemeral) |
 | `remote` / `NECRO_REMOTE` | `false` | **Master switch** — Peer-API + cfg swarm |
-| `peering` / `NECRO_PEERING` | `false` | Peer-API/peer tool only (no cfg swarm) |
-| `peer_turn_timeout` | `600` | Max wall time of a peer turn in s (watchdog + HTTP waits; published in the discovery file, the PEER's value is used by callers) |
+| `peer_api` / `NECRO_PEER_API` | `false` | Peer-API/peer tool only (no cfg swarm) |
+| `peer_turn_timeout_s` | `600` | Max wall time of a peer turn in s (watchdog + HTTP waits; published in the discovery file, the PEER's value is used by callers) |
 | `peer_max_hops` | `1` | Max peer hops in one chain (1 = no multi-hop) |
-| `peer_turn_subagents` | `true` | `delegate`/`consult` inside peer turns |
+| `peer_turn_subagents` | `false` | `delegate` inside peer turns (`consult` is always available) |
 
 ## Error Handling
 

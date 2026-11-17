@@ -1,28 +1,23 @@
 """Peer API: a tiny local HTTP server so sibling NECRO instances can delegate
 full agent turns to each other. Ephemeral port (bind 0), discovery via /tmp/necro/necro-{id}.json,
 token auth from the discovery file. One-shot: the prompt runs as a normal turn in the peer's UI."""
-import json, os, queue, secrets, socket, threading, time
+import json, os, queue, secrets, socket, threading, time, weakref
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from modules.io import tools
 # own subdir so the host only needs to mount /tmp/necro (not all of /tmp)
 PEER_DIR = Path(os.environ.get("NECRO_PEER_DIR", "/tmp/necro"))
 PEER_DIR.mkdir(parents=True, exist_ok=True)
-PEER_TURN_TIMEOUT = 600  # fallback (s) - max wall time of a peer turn; cfg 'peer_turn_timeout' / env wins
+PEER_TURN_TIMEOUT_FALLBACK = 600  # s - used when the caller passes no value; cfg 'peer_turn_timeout_s' / env wins
 OWN_ID = None  # set by PeerAPI.__init__ - unique per instance, PID is not (containers share PIDs)
+_LIVE = weakref.WeakSet()  # running instances; close_all() stops what a test forgot
 def token_ok(headers, token):
     """Constant-time token check. The peer API may bind 0.0.0.0, and a byte-wise
     '!=' leaks the token prefix through response timing. Bytes, so a non-ASCII
     header value cannot raise TypeError."""
     got = headers.get("X-Necro-Token") or ""
     return secrets.compare_digest(got.encode(), (token or "").encode())
-def _atomic_write(path, text):
-    """tmp + os.replace in the same dir - a crash mid-write never leaves a half file
-    that peer_instances()/peer_prompt() would choke on. 0600: the file carries
-    the peer token - it must not be world-readable in a shared /tmp."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
 _LOCAL_IP = None
 def local_ip():
     """Best-effort container/host IP (for cross-container peers), cached -
@@ -84,7 +79,10 @@ def peer_instances():
             # A single failure is transient (network blip, slow peer) - soft-exclude
             # from the return list. Hard-unlink only after PEER_GRACE_PERIOD of
             # consecutive failures (the peer is truly gone).
-            if not _http_alive(peer_ip, d["port"], d.get("token", "")):
+            port = d.get("port")
+            if port is None:
+                continue  # malformed entry (no port): skip, re-check next time
+            if not _http_alive(peer_ip, port, d.get("token", "")):
                 key = str(f)
                 now = time.time()
                 since = _PEER_FAILURE_SINCE.get(key, now)
@@ -147,9 +145,9 @@ def peer_busy(inst, timeout=1):
 _PEER_CLAIMS = {}  # {child_id: (claimer_id, ts)}
 _PEER_CLAIMS_LOCK = threading.Lock()
 PEER_CLAIM_TTL = 900  # s - backstop for a crashed claimer; PeerAPI.__init__ re-derives it
-                      # from turn_timeout (turn_timeout + 600) so a long peer turn does not
+                      # from the peer turn timeout (+ 600) so a long peer turn does not
                       # drop its own claim mid-flight (was hard-coded 900 s < 3600 s cfg
-                      # peer_turn_timeout -> a live claim went stale while the turn still ran)
+                      # peer_turn_timeout_s -> a live claim went stale while the turn still ran)
 def peer_set_claim(child_id, claimer_id, op="claim"):
     """Record (claim) or drop (release) a grandchild claim on THIS instance."""
     with _PEER_CLAIMS_LOCK:
@@ -189,21 +187,21 @@ def peer_prompt(inst, task, timeout=None, hops=1, budget_left=None):
     hops: hop number of the receiving turn in the chain (1 = direct call from a
     local turn); budget_left: remaining wall-clock seconds of the whole chain
     (the receiver's watchdog is capped by it). timeout: wall time of the peer
-    turn + queue wait (default: the peer's own configured peer_turn_timeout,
+    turn + queue wait (default: the peer's own configured peer_turn_timeout_s,
     read from its discovery file, capped by budget_left)."""
     import urllib.request
     host = inst.get("ip") or "127.0.0.1"  # cross-container peers use their real IP
     if timeout is None:
         # the PEER decides how long its turn may run - its discovery file carries
         # its own configured value. The task may WAIT IN THE PEER'S QUEUE behind a
-        # running turn (up to one more turn_timeout) before it even starts, so the
-        # caller timeout must cover queue + turn: without the extra turn_timeout
+        # running turn (up to one more peer turn timeout) before it even starts, so the
+        # caller timeout must cover queue + turn: without the extra turn timeout
         # the caller aborts while the peer is still running the task (double
         # execution - the dedup key is process-local and cannot catch this).
         try:
-            timeout = int(inst.get("peer_turn_timeout", PEER_TURN_TIMEOUT)) * 2 + 30
+            timeout = int(inst.get("peer_turn_timeout_s", PEER_TURN_TIMEOUT_FALLBACK)) * 2 + 30
         except (ValueError, TypeError):
-            timeout = PEER_TURN_TIMEOUT * 2 + 30  # malformed value in the discovery file
+            timeout = PEER_TURN_TIMEOUT_FALLBACK * 2 + 30  # malformed value in the discovery file
         if budget_left is not None:
             timeout = min(timeout, budget_left + 30)  # the chain budget wins
     body = {"task": task, "from": OWN_ID, "hops": hops}
@@ -222,22 +220,23 @@ def peer_prompt(inst, task, timeout=None, hops=1, budget_left=None):
         return f"error: peer {inst['id']} sent a malformed reply (no 'result' field)"
     return f"[peer {inst['id']}] {o['result']} ({o.get('tool_calls', 0)} tool calls)"
 class PeerAPI:
-    def __init__(self, app, host="127.0.0.1", port=0, turn_timeout=PEER_TURN_TIMEOUT,
+    def __init__(self, app, host="127.0.0.1", port=0, peer_turn_timeout=PEER_TURN_TIMEOUT_FALLBACK,
                  model=None, url=None):
         """host/port configurable: Docker needs 0.0.0.0 + a fixed, exposed port.
-        turn_timeout (s): max wall time of a peer turn (watchdog + HTTP waits).
+        peer_turn_timeout (s): max wall time of a peer turn (watchdog + HTTP waits).
         model/url: published in the discovery file so a parent sees which model a
         sibling runs (None = omit, older instances do not have the fields)."""
         self.model, self.url = model, url
         global OWN_ID, PEER_CLAIM_TTL
         self.app = app
-        self.turn_timeout = turn_timeout
-        # claim backstop must outlive the longest peer turn (turn_timeout) + queue wait,
+        self.peer_turn_timeout = peer_turn_timeout
+        # claim backstop must outlive the longest peer turn (peer_turn_timeout) + queue wait,
         # else a live claim goes stale mid-flight (was hard-coded 900 s < 3600 s cfg)
-        PEER_CLAIM_TTL = max(PEER_CLAIM_TTL, turn_timeout + 600)
+        PEER_CLAIM_TTL = max(PEER_CLAIM_TTL, peer_turn_timeout + 600)
         self.id = os.urandom(4).hex()
         OWN_ID = self.id  # self-identity for sibling filtering (PID is not unique across containers)
         self.token = os.urandom(12).hex()
+        self._stop = threading.Event()  # close(): lets the worker thread end
         self.host = host
         self.bind_error = None
         try:
@@ -255,6 +254,7 @@ class PeerAPI:
         # incoming peer turns are queued and run one after another -
         # a second POST no longer gets 409 (the sender would have to retry itself)
         app._peer_queue = queue.Queue()
+        _LIVE.add(self)
         threading.Thread(target=self._peer_worker, daemon=True).start()
         self.path = PEER_DIR / f"necro-{self.id}.json"
         self.announce()
@@ -273,18 +273,22 @@ class PeerAPI:
         d = {"id": self.id, "host": self.host,
              "ip": local_ip() if self.host in ("0.0.0.0", "::") else "127.0.0.1",
              "port": self.port, "token": self.token,
-             "peer_turn_timeout": self.turn_timeout,
+             "peer_turn_timeout_s": self.peer_turn_timeout,
              "pid": os.getpid(), "cwd": os.getcwd()}
         if self.model:
             d["model"] = self.model
         if self.url:
             d["url"] = self.url
-        _atomic_write(self.path, json.dumps(d))
+        # 0600: the discovery file carries the peer token, /tmp is shared
+        tools.atomic_write(self.path, json.dumps(d), mode=0o600)
 
     def _peer_worker(self):
         """Drain the incoming peer-turn queue - one turn at a time, in order."""
-        while True:
-            msg, frm, ev, hops, budget_left = self.app._peer_queue.get()
+        while not self._stop.is_set():
+            try:  # timeout, so close() is noticed instead of waiting for the next peer turn
+                msg, frm, ev, hops, budget_left = self.app._peer_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
             task = msg["content"]
             # a LOCAL turn may have started after the previous peer turn ended -
             # wait for it before starting this one, otherwise two turns would
@@ -312,7 +316,7 @@ class PeerAPI:
             # wall-clock budget, not one full peer_turn_timeout per hop. The budget
             # and its start time are stored on the app so a peer call made DURING
             # this turn can pass the remaining time to the next hop.
-            tmo = self.turn_timeout
+            tmo = self.peer_turn_timeout
             if budget_left is not None:
                 try:
                     # floor 0.2 s (not 1 s) so sub-second chain budgets still cap
@@ -339,13 +343,30 @@ class PeerAPI:
                 self.app._peer_hops = 0
                 self.app._peer_from = None
     def close(self):
+        """Stop the API: discovery file, accept loop, socket and worker thread.
+        Idempotent. A close() that only unlinked the file left the port open and
+        two threads running - a test suite that builds many PeerAPI objects piled
+        up ~80 threads and starved the CPU of the whole container."""
+        _LIVE.discard(self)
         try:
             self.path.unlink()
         except OSError:
             pass
+        self._stop.set()
+        try:
+            self._srv.shutdown()
+            self._srv.server_close()
+        except Exception:
+            pass  # already closed: close() must never raise in a shutdown path
+
+
+def close_all():
+    """Close every live PeerAPI (test teardown; /quit uses its own instance)."""
+    for api in list(_LIVE):
+        api.close()
 def _make_handler(api):
     class H(BaseHTTPRequestHandler):
-        timeout = api.turn_timeout + 30  # a full agent turn can take minutes; +30 s so the
+        timeout = api.peer_turn_timeout + 30  # a full agent turn can take minutes; +30 s so the
                                          # response still goes out after ev.wait() times out
         def log_message(self, *a):
             pass
@@ -408,7 +429,7 @@ def _make_handler(api):
             # must already be in the context when ITS turn runs (not the next one's).
             ev = threading.Event()
             app._peer_queue.put((msg, frm, ev, hops, budget_left))
-            ev.wait(timeout=api.turn_timeout)
+            ev.wait(timeout=api.peer_turn_timeout)
             # only messages of THIS turn - a turn that ended without a new assistant
             # reply (error/abort/timeout) must return '(no output)', not a stale reply
             # from an earlier conversation. matched by IDENTITY, not by index -

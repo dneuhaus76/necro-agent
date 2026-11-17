@@ -31,19 +31,37 @@ chat.
 |---|---|
 | `/stop` | Interrupt the current turn |
 | `/new` | New session (reset context) |
+| `/model` | Model details (same text as the TUI `/model`) |
+| `/model <name>` | Switch the live model; the probe re-runs, the peer discovery is updated |
 | `/quit` | Quit NECRO (aborts a running turn first) |
+| `/compact` | Shrink the context now (same compaction as the automatic one, no 80 % threshold); queued while a turn runs, because it rewrites the context |
 | `/status` | Token/context usage (real, or a labelled estimate) - answered immediately, also mid-turn |
+| `/tgcommands update` | (Re)push the Telegram client command menu (`setMyCommands`); bare `/tgcommands` does the same |
+| `/tgcommands remove` | Clear the client command menu (legacy word `clear` works too) |
 | `/help` | This list |
-| `/tgcommands [clear]` | (Re)push / remove the Telegram client command menu (`setMyCommands`) |
 | `<text>` | Normal prompt (starts a turn) |
 
-Anything that is not a command is a prompt.
+Anything that is not a command is a prompt. A command that starts with `/` but
+is not in the list is answered with the command list instead of starting a turn
+(a typo must not cost tokens). In group chats Telegram appends `@botname` to
+the command (`/model@necro_bot x`) - `tg_command()` strips it.
 
 The command list is a single source (`TG_COMMAND_SPECS` in `necro.py`): the
 `/help` text is derived from it, and the same list is pushed to Telegram at
 startup via `setMyCommands` (best effort — a failure only logs a warning).
-Telegram shows the entries in its own `/` menu. Descriptions are cut to 25
-chars (Bot API hard limit).
+Telegram shows the entries in its own `/` menu.
+
+The Bot API allows a description of **256** chars, but the client shows it in a
+narrow column and cuts the text itself. So the limit is a *style* rule, not an
+API one: complete words, <= 32 chars
+(`test_descriptions_are_short_and_never_cut_mid_word`). The client code only
+clips at the real API limit (`tg.TG_DESC_MAX`) - it used to cut every
+description at 25 chars, which produced "interrupt the current tur".
+A name that violates the API pattern (`[a-z0-9_]`, <= 32) is skipped, because
+one bad entry makes Telegram reject the whole menu.
+
+The TUI answers `/tgcommands update|remove` with the same function, so the menu
+can be refreshed from the terminal too.
 
 ## Progress feedback
 

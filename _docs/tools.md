@@ -1,7 +1,7 @@
 # NECRO – Core Tools
 
-The five file/shell tools live in `modules/io/tools.py` (pure functions, no App
-state); dispatch and result handling live in `modules/core/agent.py`
+The file/shell/image tools live in `modules/io/tools.py` (pure functions, no
+App state); dispatch and result handling live in `modules/core/agent.py`
 (`_TOOL_FNS`, `run_tool()`, `_run_one()`, `run_calls()`).
 
 ## Constants (SSOT in modules/io/tools.py)
@@ -13,6 +13,7 @@ state); dispatch and result handling live in `modules/core/agent.py`
 | `CONTENT_CAP` | 20000 chars | Max chars of file/context content (read_file, result truncation, MD context load) |
 | `GREP_MAX_COUNT` | 100 | Max matches per file for grep |
 | `GREP_TIMEOUT` | 30 s | Wall-time cap of the grep tool |
+| `LOOK_MAX_BYTES` | 8 MB | Max image size of the look tool |
 
 ## bash
 
@@ -50,6 +51,13 @@ state); dispatch and result handling live in `modules/core/agent.py`
   NEXT full line: `…[truncated, N bytes total - continue with offset X]`.
 - A file of exactly `CONTENT_CAP` chars is NOT reported truncated (an endless
   re-read of the same content would result).
+- **Range path** (`offset`/`limit`): read line by line, only the requested lines
+  plus ONE probe line ("is there more?") are touched. `offset`/`limit` come from
+  the model, so both are bounded: `limit` is capped by `CONTENT_CAP` chars and
+  the file is never fully loaded (a 300 MB log with `limit=1` costs ~11 MB RSS,
+  the previous `read_text()` version cost 611 MB).
+- The header names the range and whether more follows:
+  `[lines 2-2+, more follows]` vs `[lines 3-3]`.
 
 ## write_file
 
@@ -57,6 +65,10 @@ state); dispatch and result handling live in `modules/core/agent.py`
   (`X is a file (not a directory)`).
 - Serialized across processes and threads via `file_lock`
   (`modules/core/filelock.py`, `fcntl.flock` on a per-file `<name>.lock`).
+- Written via `atomic_write` (tmp file + `os.replace`): the tmp name is unique
+  per thread, the mode of an existing target is preserved, and a failed write
+  removes its tmp file. Same helper as the peer discovery file (there with
+  `mode=0o600`).
 
 ## edit_file
 
@@ -65,6 +77,30 @@ state); dispatch and result handling live in `modules/core/agent.py`
 - read + count + write run in ONE flock critical section, so concurrent edits
   of the same file (also from peer instances) cannot race.
 - Returns a diff view (`-`/`+` lines) instead of the full new content.
+
+## look
+
+`run_look(path)` returns `(text_line, base64, mime)`; on any problem
+`(error string, None, None)`.
+
+- **Type by magic bytes, not by suffix:** JPEG `ff d8 ff`, PNG
+  `89 50 4e 47`, WebP `RIFF` at 0 + `WEBP` at 8. GIF/BMP are rejected with a
+  clear error (no mmproj support).
+- **Guards before the read:** directory, missing file, empty file,
+  `LOOK_MAX_BYTES`. The size check comes first, so a 200 MB file is never read
+  just to be rejected.
+- The **tool result is a plain string** (`image: /p/a.png (png, 140 KB)`) —
+  `turn.py`, `context.py` and `sessiondb.py` never see a content list.
+- The image rides in an **extra user message** with an `image_url` part
+  (`data:<mime>;base64,...`), injected by `Agent.stream()` right before the
+  request and replaced by `[image: <path>]` right after it — also on abort
+  (`_push_images` / `_settle_images` in a `try/finally`). So exactly ONE
+  request pays the base64 prefill, and the session DB only ever stores the
+  path. Wants the model the image again, it calls `look` again.
+- Pending images are a **list**, not one slot: two parallel `look` calls in
+  one step both survive.
+- Available in `TOOLS`, `SUB_TOOLS` (a `delegate_fallback` runs on the local
+  model with mmproj) and in peer turns.
 
 ## Atomic writes (crash safety)
 

@@ -9,12 +9,12 @@ main model can use as sub-agents. Pure logic lives in `modules/io/swarm.py`
 
 | Source | Form |
 |---|---|
-| `necro.cfg` key `swarm` | list `[{url?, model}]` (empty url = main base) |
+| `necro.cfg` key `swarm` | list `[{url?, model, provider?}]` (empty url = main base; `provider` names the runner when the hostname gives no hint, e.g. `bigmoe`) |
 | env `NECRO_SWARM` | `model=url;model=url` (always wins over cfg; empty = explicit off) |
 
 **Master switches:** the swarm is OFF by default. It is active via
 `NECRO_SWARM` (explicit env list) or `remote=true` / `NECRO_REMOTE` (cfg
-list). `PEERING`/`peering` does NOT activate the cfg swarm list (it only
+list). `PEER_API`/`peer_api` does NOT activate the cfg swarm list (it only
 enables the Peer-API — see peer-mechanism.md).
 
 The **main model is filtered out** of the list: delegating to itself (same
@@ -51,6 +51,18 @@ error instead of burning a request on a dead host.
 - Runs its own tool loop (`_agent_loop`, **max 10 steps**) on the swarm
   model: own context (system prompt + task), same working directory, tools =
   `SUB_TOOLS` (see below).
+- **Worker prompt** (`subagent_prompt`, `_worker_prompt`): the shared rule
+  block (`RULES` - grep not cat, small unique edit anchors, bias for action,
+  injection guard), the **live** tool names of this loop, the date, the skills
+  hint (`skills_hint`) and the **same project document as the caller**
+  (`NECRO.md` wins, `AGENTS.md` is the fallback). A worker that reads a
+  different document than its caller follows different rules.
+
+  `skills_hint` is deliberately bounded: it names the index and three limits —
+  open it only on a matching workflow, load **exactly one** `SKILL.md`, never
+  reload one already used in the turn. "Read the index first" would charge every
+  turn for it and invite a skill load for a one-line question.
+
 - **Live progress:** the tool block header shows step + elapsed time
   (`progress_head`) — a delegate can take minutes, the user must see the
   session is working. Each sub-step (tool call + result excerpt) is logged
@@ -66,7 +78,10 @@ error instead of burning a request on a dead host.
 ### Nested delegate (opt-in)
 
 `subagent_delegate` (default `false`) re-adds `delegate` to sub-agents for
-parallel decomposition. Nesting is explicitly capped by `subagent_max_depth`
+parallel decomposition, and `consult` along with it (a stuck sub-agent needs
+an opinion, not another work loop; consult runs no tools). A sub-agent must
+not call back into the endpoint it runs on (`_self_target_err`). Nesting is
+explicitly capped by `subagent_max_depth`
 (default 1 = direct delegate only) — the cap, not the 10-step loop budget,
 is the limit. `subagent_tools(depth)` builds the child's toolset from the
 running loop's depth. Nested calls are counted in the trace
@@ -78,8 +93,14 @@ Multi-round bot-to-bot dialogue (no tools on the remote side):
 
 - The remote model may ask follow-up questions prefixed `QUESTION:` (one at
   a time, **max 3**); the final answer is prefixed `ANSWER:`.
+- **Opinion only, by design:** the consultant gets no tools and no file
+  access, and its prompt says so — it must ask a QUESTION for a fact instead
+  of claiming it read the code. Need a model that reads files? Use `peer`
+  (own turn, own tools) or `delegate`.
 - The local agent answers with its **full conversation context** (a local
-  completion without tools).
+  completion without tools) and keeps the **main system prompt** (project
+  rules, cwd, date) — otherwise a follow-up about a project rule would be
+  answered without the rule.
 - Old tool results are trimmed to 2000 chars (`CONSULT_TRIM`) both when the
   local context is built and when each round is appended — the remote
   context stays bounded across rounds.
@@ -92,14 +113,15 @@ Multi-round bot-to-bot dialogue (no tools on the remote side):
 
 ## Ping-pong protection
 
-Sub-agents never receive the `delegate`/`consult`/`peer` tools
+Sub-agents do not receive `delegate`/`consult`/`peer` by default
 (`SUB_TOOLS`), so a sibling cannot hand tasks back to the master while it is
-busy. This is a tool-level guard, not a hard guarantee — the model can still
+busy. `subagent_delegate` re-adds `delegate` **and** `consult` below
+`subagent_max_depth`. This is a tool-level guard, not a hard guarantee — the model can still
 be prompted to do such things.
 
 Peer turns are different: they use `peer_turn_tools(hops)` (see
-peer-mechanism.md), which keeps `delegate`/`consult` when
-`PEER_TURN_SUBAGENTS` is on (default) and re-adds `peer` while
+peer-mechanism.md), which keeps `consult` always, adds `delegate` only when
+`PEER_TURN_SUBAGENTS` is on (default off) and re-adds `peer` while
 `hops < PEER_MAX_HOPS`.
 
 ## Worker scaling

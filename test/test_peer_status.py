@@ -1,5 +1,5 @@
 """peer_status_loop - first check after 3 s, then 30 s loop; the Peer-API
-line is green (EMBLEM) while a peer is online, neutral (DARK) otherwise."""
+line is green (ACCENT) while a peer is online, neutral (MUTED) otherwise."""
 import json
 import os
 import tempfile
@@ -74,7 +74,7 @@ def test_online_peer_turns_line_green(env, monkeypatch):
     app = FakeApp(blk)
     inst = [{"id": "peer1", "pid": os.getpid(), "cwd": "/tmp", "port": 1, "token": "t"}]
     _run_first_check(necro, app, blk, monkeypatch, inst)
-    assert blk.color == necro.EMBLEM
+    assert blk.color == necro.ACCENT
     assert app.dirty is True
 
 
@@ -83,7 +83,7 @@ def test_no_peer_stays_dark(env, monkeypatch):
     blk = FakeBlk()
     app = FakeApp(blk)
     _run_first_check(necro, app, blk, monkeypatch, [])
-    assert blk.color == necro.DARK
+    assert blk.color == necro.MUTED
     assert app.dirty is True
 
 
@@ -94,13 +94,13 @@ def test_own_instance_not_counted(env, monkeypatch):
     app = FakeApp(blk)
     inst = [{"id": "self", "pid": os.getpid(), "cwd": "/tmp", "port": 1, "token": "t"}]
     _run_first_check(necro, app, blk, monkeypatch, inst)
-    assert blk.color == necro.DARK
+    assert blk.color == necro.MUTED
 
 
 def test_new_session_replaces_block(env, monkeypatch):
     """/clear//new replaces the Peer-API block while the SAME loop runs - it must
     color the NEW block, not the discarded old one (regression: line stayed
-    DARK after /new). The peer stays online, so no state change triggers it."""
+    MUTED after /new). The peer stays online, so no state change triggers it."""
     necro, peer_dir = env
     old_blk = FakeBlk()
     app = FakeApp(old_blk)
@@ -131,5 +131,5 @@ def test_new_session_replaces_block(env, monkeypatch):
     t.start()
     t.join(10)
     assert not t.is_alive()
-    assert old_blk.color == necro.EMBLEM     # colored before /new
-    assert new_blk.color == necro.EMBLEM     # recolored after /new (same state)
+    assert old_blk.color == necro.ACCENT     # colored before /new
+    assert new_blk.color == necro.ACCENT     # recolored after /new (same state)

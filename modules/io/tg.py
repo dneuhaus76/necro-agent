@@ -1,5 +1,9 @@
 """Telegram client for NECRO (long polling, stdlib only)."""
 import http.client, json, mimetypes, os, re, tempfile, threading, time, urllib.request
+# Bot API limits for setMyCommands (name and description); one violated entry
+# rejects the whole request, so the values are clipped instead of sent raw
+TG_DESC_MAX = 256
+TG_COMMAND_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
 TG_INBOX = "/tmp/necro-tg"  # incoming files land here (world-readable tmp, per-instance subdir optional)
 class TelegramBot:
     """Long-polling Telegram client (pi-telegram-plus-style): incoming text messages
@@ -155,10 +159,17 @@ class TelegramBot:
     def set_my_commands(self, commands):
         """Push the bot's command menu to Telegram (setMyCommands). `commands` is a
         list of (name, description) tuples; Telegram shows them in the client's
-        '/' menu. Returns True on success."""
-        r = self._api("setMyCommands", commands=[
-            {"command": name, "description": desc[:25]}  # Bot API hard limit: 25 chars
-            for name, desc in commands])
+        '/' menu. Returns True on success.
+
+        Bot API limits: name 1-32 chars of [a-z0-9_], description 1-256 chars.
+        A cut description reads like a typo, so the text is passed through and
+        only clipped at the real API limit - the menu author keeps it short."""
+        rows = []
+        for name, desc in commands:
+            if not TG_COMMAND_NAME.match(name):
+                continue  # one bad name makes Telegram reject the whole list
+            rows.append({"command": name, "description": (desc or name)[:TG_DESC_MAX]})
+        r = self._api("setMyCommands", commands=rows)
         return bool(r.get("ok"))
     def clear_my_commands(self):
         """Remove all bot commands from the Telegram client menu (empty list)."""

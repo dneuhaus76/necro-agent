@@ -78,7 +78,7 @@ def test_peer_turn_reports_busy(api):
 
 def test_hung_turn_is_aborted_by_watchdog(api, monkeypatch):
     api_mod, p, app = api
-    p.turn_timeout = 0.2  # short watchdog for the test (now per-instance, cfg 'peer_turn_timeout')
+    p.peer_turn_timeout = 0.2  # short watchdog for the test (now per-instance, cfg 'peer_turn_timeout_s')
 
     def hung_turn(chat_id=None, done=None):
         app.busy = True
@@ -104,7 +104,7 @@ def test_hung_turn_is_aborted_by_watchdog(api, monkeypatch):
 def test_discovery_file_carries_turn_timeout(api):
     api_mod, p, app = api
     d = json.loads(p.path.read_text())
-    assert d["peer_turn_timeout"] == p.turn_timeout  # written at startup
+    assert d["peer_turn_timeout_s"] == p.peer_turn_timeout  # written at startup
 
 
 def test_peer_prompt_uses_peers_own_timeout(api, monkeypatch):
@@ -114,7 +114,7 @@ def test_peer_prompt_uses_peers_own_timeout(api, monkeypatch):
     api_mod, p, app = api
     # the peer's configured value must be in its discovery file
     d = json.loads(p.path.read_text())
-    d["peer_turn_timeout"] = 1234
+    d["peer_turn_timeout_s"] = 1234
     p.path.write_text(json.dumps(d))
     captured = {}
 
@@ -131,10 +131,10 @@ def test_peer_prompt_uses_peers_own_timeout(api, monkeypatch):
 
 def test_peer_prompt_malformed_discovery_falls_back(api, monkeypatch):
     """a broken peer_turn_timeout in the discovery file must not crash the
-    caller - it falls back to the local PEER_TURN_TIMEOUT (* 2 + 30 s)."""
+    caller - it falls back to the local PEER_TURN_TIMEOUT_FALLBACK (* 2 + 30 s)."""
     api_mod, p, app = api
     d = json.loads(p.path.read_text())
-    d["peer_turn_timeout"] = "not-a-number"
+    d["peer_turn_timeout_s"] = "not-a-number"
     p.path.write_text(json.dumps(d))
     captured = {}
 
@@ -146,7 +146,7 @@ def test_peer_prompt_malformed_discovery_falls_back(api, monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     inst = json.loads(p.path.read_text())
     api_mod.peer_prompt(inst, "task")  # must not raise
-    assert captured["timeout"] == api_mod.PEER_TURN_TIMEOUT * 2 + 30
+    assert captured["timeout"] == api_mod.PEER_TURN_TIMEOUT_FALLBACK * 2 + 30
 
 
 def test_discovery_write_is_atomic(api):

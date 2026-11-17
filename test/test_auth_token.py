@@ -60,12 +60,12 @@ def test_open_conn_sends_bearer_header():
     threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_port}/v1"
     try:
-        conn, r = inference.open_conn(base, {"model": "m"}, token="sekret")
+        conn, r = inference.open_conn(base, {"model": "m"}, timeout=5, token="sekret")
         r.read()
         conn.close()
         assert seen["auth"] == "Bearer sekret"
         # without a token: no Authorization header at all (optional, N174)
-        conn, r = inference.open_conn(base, {"model": "m"})
+        conn, r = inference.open_conn(base, {"model": "m"}, timeout=5)
         r.read()
         conn.close()
         assert seen["auth"] is None
@@ -73,13 +73,14 @@ def test_open_conn_sends_bearer_header():
         srv.shutdown()
 
 
-def test_open_conn_default_timeout_matches_step_timeout():
-    """F3: the open_conn default timeout must match the STEP_TIMEOUT default (300 s),
-    not the pre-STEP_TIMEOUT 900 s relic - a call without an explicit timeout must not
-    silently get 3x longer than intended."""
+def test_open_conn_has_no_default_timeout():
+    """cfg 'step_timeout_s' is the only owner of the value: a default here would be
+    a second copy that drifts (the 900 s relic was exactly that). A caller that
+    forgets the timeout must fail loudly, not fall back to a number."""
     import inspect
-    d = inspect.signature(inference.open_conn).parameters["timeout"].default
-    assert d == 300, f"open_conn default timeout is {d}, expected 300 (STEP_TIMEOUT default)"
+    assert inspect.signature(inference.open_conn).parameters["timeout"].default is None
+    with pytest.raises(ValueError):
+        inference.open_conn("http://127.0.0.1:9/v1", {"model": "m"})
 
 
 def test_validate_auth_key():
