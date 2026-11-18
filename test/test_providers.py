@@ -242,6 +242,7 @@ def test_probe_detects_a_runner_without_model_args(monkeypatch):
     """A BigMoeOnEdge runner serves /models without args. No provider name is
     needed: /api/info answers, so the details come from there."""
     from modules.core import probe
+    monkeypatch.setattr(probe, "_single_model_info", lambda b, m, c, t: None)
     monkeypatch.setattr(probe, "_models_info", lambda b, m, c, t: probe.default_info(c))
     monkeypatch.setattr(probe, "_bigmoe_model_info", lambda b, m, c, t: {"via": "detected"})
     assert probe.fetch_model_info("http://10.0.0.9:8080/v1", "m", 8192) == {"via": "detected"}
@@ -249,6 +250,7 @@ def test_probe_detects_a_runner_without_model_args(monkeypatch):
 
 def test_probe_keeps_the_fallback_when_detection_fails(monkeypatch):
     from modules.core import probe
+    monkeypatch.setattr(probe, "_single_model_info", lambda b, m, c, t: None)
     monkeypatch.setattr(probe, "_models_info", lambda b, m, c, t: None)
     monkeypatch.setattr(probe, "_bigmoe_model_info", lambda b, m, c, t: None)
     info = probe.fetch_model_info("http://10.0.0.9:8080/v1", "m", 8192)
@@ -260,6 +262,7 @@ def test_named_provider_skips_the_detection(monkeypatch):
     from modules.core import probe
     def boom(*a):
         raise AssertionError("detection must not run for a named provider")
+    monkeypatch.setattr(probe, "_single_model_info", lambda b, m, c, t: None)
     monkeypatch.setattr(probe, "_bigmoe_model_info", boom)
     monkeypatch.setattr(probe, "_models_info", lambda b, m, c, t: probe.default_info(c))
     assert probe.fetch_model_info("http://10.0.0.9:8080/v1", "m", 8192, None, "openai")["ctx"] == 8192

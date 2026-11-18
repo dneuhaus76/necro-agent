@@ -4,7 +4,7 @@ import http.client
 import json
 import re
 import time
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from modules.core import inference, providers
 def _conn(base, timeout, token=None):
@@ -150,6 +150,73 @@ def _reasoning(args):
         except ValueError:
             budget = ""  # malformed value: no claim in either direction
     return "on" if switch or budget else ""
+CTX_KEYS = ("context_window", "context_length", "max_context_length")  # DeepSeek, OpenRouter
+SINGLE_PATHS = ("/models/{model}", "/model/{model}")  # OpenAI single model | OpenRouter
+
+
+def _flat_info(base, model, ctx_fallback, m):
+    """Details from a hosted API's flat model object (no server args). The list
+    (/models) and the single lookup (/model, /models/<id>) answer the same shape,
+    so both paths share this mapping."""
+    info = default_info(ctx_fallback)
+    info["status"] = m.get("name") or ""
+    if isinstance(m.get("context_window"), int):  # DeepSeek list shape
+        info["ctx"] = m["context_window"]
+    else:
+        for key in CTX_KEYS:  # OpenRouter publishes the window as context_length
+            if isinstance(m.get(key), int):
+                info["ctx"] = m[key]
+                break
+    if e := (m.get("effort") or {}).get("default_level"):
+        info["effort"] = e
+    arch = m.get("architecture")
+    info["arch"] = _arch_text(arch if isinstance(arch, dict)
+                              else {"input_modalities": m.get("input_modalities"),
+                                    "output_modalities": m.get("output_modalities")})
+    for key, field in (("temperature", "temp"), ("top_p", "top_p"), ("top_k", "top_k")):
+        if (m.get("default_parameters") or {}).get(key) is not None:
+            info[field] = str(m["default_parameters"][key])
+    if m.get("created"):
+        info["created"] = time.strftime("%Y-%m-%d", time.gmtime(m["created"]))
+    return info
+
+
+def _model_object(data, model):
+    """The model object out of a single-lookup answer: OpenRouter wraps it in
+    'data', OpenAI returns it bare. None when it is not the asked model."""
+    m = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+    if not isinstance(m, dict) or not m.get("id"):
+        return None
+    return m if m["id"] == model else None
+
+
+def _single_model_info(base, model, ctx_fallback, token):
+    """Details from a single-model lookup. OpenAI answers on GET /models/<id>,
+    OpenRouter on GET /model/<id> (singular, above its OpenAI-compatible routes).
+    Returns None when neither path answers with the asked model."""
+    root, quoted = urlparse(base).path.rstrip("/"), quote(model, safe="/:@")
+    for path in (p.format(model=quoted) for p in SINGLE_PATHS):
+        try:  # one connection per path: a keep-alive close must not skip the second path
+            c, _, _ = _conn(base, 3, token)
+            try:
+                c.request("GET", root + path, headers=_hdrs(token))
+                r = c.getresponse()
+                body = r.read()
+            finally:
+                c.close()
+        except Exception:
+            return None  # host does not answer: the second route would fail the same way
+        if r.status != 200:  # this provider has no single-model route under this path
+            continue
+        try:
+            data = json.loads(body)
+        except ValueError:
+            continue
+        if m := _model_object(data, model):
+            return _flat_info(base, model, ctx_fallback, m)
+    return None
+
+
 def _models_info(base, model, ctx_fallback, token):
     """Details from the OpenAI-compatible GET /models. None when the endpoint is
     missing or fails; a dict with only the fallback ctx when the server answers
@@ -168,15 +235,8 @@ def _models_info(base, model, ctx_fallback, token):
         for m in data.get("data") or []:
             if m.get("id") != model:
                 continue
-            if "context_window" in m:  # hosted API (e.g. DeepSeek): flat fields, no server args
-                info["status"] = m.get("name") or ""
-                if isinstance(m.get("context_window"), int):
-                    info["ctx"] = m["context_window"]
-                if e := (m.get("effort") or {}).get("default_level"):
-                    info["effort"] = e
-                info["arch"] = _arch_text({"input_modalities": m.get("input_modalities"),
-                                           "output_modalities": m.get("output_modalities")})
-                continue
+            if any(key in m for key in CTX_KEYS):  # hosted API (DeepSeek, OpenRouter): flat fields
+                return _flat_info(base, model, ctx_fallback, m)
             args = (m.get("status") or {}).get("args") or []
             def g(flag):  # value of a --flag in the server args, '' if absent or dangling
                 return _arg(args, flag)
@@ -219,15 +279,19 @@ def fetch_model_info(base, model, ctx_fallback, token=None, name=None):
     Fallback: ctx_fallback, '' for the rest. token = optional per-server access token;
     name = explicit provider name (cfg 'provider' / env NECRO_PROVIDER).
 
-    A named provider with a native API answers directly (Google). Otherwise /models
-    is asked. Publishes the server no details (a BigMoeOnEdge runner serves /models
-    without args), the runner's own /api/info is asked before giving up - so a local
-    IP needs no provider name at all."""
+    A named provider with a native API answers directly (Google). Otherwise the
+    single-model lookup is tried first (OpenAI /models/<id>, OpenRouter /model/<id>),
+    then the /models list. Publishes the server no details (a BigMoeOnEdge runner
+    serves /models without args), the runner's own /api/info is asked before giving
+    up - so a local IP needs no provider name at all."""
     prof = providers.resolve(base, name)
     if prof.info_api in NATIVE_INFO:  # no usable /models: the provider's native API answers
         return (NATIVE_INFO[prof.info_api](base, model, ctx_fallback, token)
                 or _hosted_fallback(base, model, ctx_fallback, "native API lookup failed"))
-    info = _models_info(base, model, ctx_fallback, token)
+    info = _single_model_info(base, model, ctx_fallback, token)
+    if has_details(info, ctx_fallback):
+        return info
+    info = _models_info(base, model, ctx_fallback, token) or info
     if has_details(info, ctx_fallback):
         return info
     if name is None:  # no name given: the runner may answer on its own API
