@@ -5,6 +5,8 @@
 !LICENSE
 !_docs/
 _docs/*.lock
+!_assets/
+_assets/*.lock
 !modules/
 !test/
 !emblem

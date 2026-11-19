@@ -190,7 +190,7 @@ HELP_TUI = (
     "  /status          - context/token usage (real or labelled estimate)\n"
     "  /tgcommands      - Telegram menu: update | remove\n"
     "  /cd <dir>        - change working directory\n"
-    "  /clear|/new      - new session (reset context)\n"
+    "  /new|/clear      - new session (reset context)\n"
     "  /review /test /plan - prompt templates\n"
     "  /quit            - quit NECRO\n"
     "  <Text>           - normal prompt (starts a turn)"
